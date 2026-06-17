@@ -77,7 +77,10 @@ def indirect_expense_account_query(doctype, txt, searchfield, start, page_len, f
 @frappe.whitelist()
 def get_pos_invoices_for_reprint(date=None, from_time=None, to_time=None,
                                   status=None, search_term=None, limit=50):
-	filters = {"docstatus": ["!=", 0], "posting_date": date}
+	filters = {"docstatus": 1}
+
+	if date:
+		filters["posting_date"] = date
 
 	if status and status != "All":
 		filters["status"] = status
@@ -103,7 +106,7 @@ def get_pos_invoices_for_reprint(date=None, from_time=None, to_time=None,
 		fields=[
 			"name", "customer", "customer_name", "status",
 			"grand_total", "currency", "posting_date", "posting_time",
-			"paid_amount", "total_qty",
+			"paid_amount", "total_qty", "owner",
 		],
 		order_by="posting_date desc, posting_time desc",
 		limit=cint(limit),
@@ -178,8 +181,15 @@ def get_partial_print_url(invoice_name, selected_items):
 	doc.calculate_taxes_and_totals()
 
 	print_format = None
+	letter_head = doc.letter_head
 	if doc.pos_profile:
-		print_format = frappe.db.get_value("POS Profile", doc.pos_profile, "print_format")
+		profile = frappe.get_doc("POS Profile", doc.pos_profile)
+		print_format = profile.print_format
+		if not letter_head:
+			letter_head = profile.letter_head
+
+	if not print_format and not frappe.db.get_value("Print Format", "POS Invoice", "disabled"):
+		print_format = "POS Invoice"
 	if not print_format:
 		print_format = "Standard"
 
@@ -189,8 +199,8 @@ def get_partial_print_url(invoice_name, selected_items):
 		print_format=print_format,
 		doc=doc,
 		as_pdf=False,
-		no_letterhead=0,
-		letterhead=doc.letter_head,
+		no_letterhead=0 if letter_head else 1,
+		letterhead=letter_head,
 	)
 
 	key = hashlib.md5((invoice_name + str(selected_items)).encode()).hexdigest()
@@ -206,14 +216,21 @@ def show_partial_print(key):
 	if not html:
 		frappe.throw("The print preview has expired. Please re-select items and try again.")
 
-	frappe.response["type"] = "html"
-	return """
-	<!DOCTYPE html>
-	<html>
-	<head><meta charset="utf-8"><title>Print Receipt</title>
-	<style>@media print { body { margin: 0; padding: 0; } }</style>
-	<script>window.onload = function() { window.print(); };</script>
-	</head>
-	<body>{html}</body>
-	</html>
-	""".format(html=html)
+	full_page = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Print Receipt</title>
+<style>@media print {{ body {{ margin: 0; padding: 0; }} }}</style>
+<script>window.onload = function() {{ window.print(); }};</script>
+</head>
+<body>{html}</body>
+</html>"""
+
+	frappe.response.update({
+		"http_status_code": 200,
+		"type": "download",
+		"filecontent": full_page,
+		"filename": "receipt.html",
+		"content_type": "text/html",
+		"display_content_as": "inline",
+	})
+	return

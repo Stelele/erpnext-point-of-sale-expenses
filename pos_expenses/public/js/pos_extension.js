@@ -95,13 +95,10 @@ frappe.provide('erpnext.PointOfSale');
 								fields: [],
 							});
 		
-							this._reprint_dialog.$wrapper.css({
-								"max-width": "95vw",
-								"width": "95vw",
-							});
 							this._reprint_dialog.$wrapper.find(".modal-dialog").css({
 								"max-width": "95vw",
 								"width": "95vw",
+								"margin": "0 auto",
 							});
 							this._reprint_dialog.$wrapper.find(".modal-body").css({
 								"padding": "0",
@@ -109,6 +106,7 @@ frappe.provide('erpnext.PointOfSale');
 								"height": "85vh",
 							});
 		
+							this._date_filter_active = false;
 							this._render_reprint_body();
 							this._reprint_dialog.show();
 						}
@@ -135,6 +133,7 @@ frappe.provide('erpnext.PointOfSale');
 		
 							this._build_filters(body.find(".reprint-filters"));
 							this._reprint_selected_invoice_name = null;
+							this._refresh_invoice_list();
 		
 							// Invoice row click handler
 							this._reprint_dialog.$wrapper.find(".reprint-invoice-list").on(
@@ -177,6 +176,7 @@ frappe.provide('erpnext.PointOfSale');
 								label: __('Date'), fieldtype: "Date", fieldname: "reprint_date",
 								default: frappe.datetime.get_today(),
 								onchange: function () {
+									me._date_filter_active = true;
 									clearTimeout(me._filter_timer);
 									me._filter_timer = setTimeout(function () { me._refresh_invoice_list(); }, 300);
 								},
@@ -185,6 +185,7 @@ frappe.provide('erpnext.PointOfSale');
 								render_input: true,
 							});
 							this._date_field.refresh();
+							this._date_field.set_value(frappe.datetime.get_today());
 		
 						// Time from
 						this._from_time_field = frappe.ui.form.make_control({
@@ -245,6 +246,7 @@ frappe.provide('erpnext.PointOfSale');
 								render_input: true,
 							});
 							this._status_field.refresh();
+							this._status_field.set_value("All");
 		
 							// Search
 							this._search_field = frappe.ui.form.make_control({
@@ -265,17 +267,25 @@ frappe.provide('erpnext.PointOfSale');
 						_refresh_invoice_list() {
 							var me = this;
 							var parent = this._reprint_dialog.$wrapper.find(".reprint-invoice-list");
-		
+							var status = this._status_field.get_value();
+							var search = this._search_field.get_value();
+							var from_time = this._from_time_field.get_value();
+							var to_time = this._to_time_field.get_value();
+
+							var args = {
+								status: status,
+								search_term: search,
+								limit: 50,
+							};
+							if (this._date_filter_active) {
+								args.date = this._date_field.get_value();
+							}
+							if (from_time) args.from_time = from_time;
+							if (to_time) args.to_time = to_time;
+
 							frappe.call({
 								method: "pos_expenses.api.get_pos_invoices_for_reprint",
-								args: {
-									date: this._date_field.get_value(),
-									from_time: this._from_time_field.get_value(),
-									to_time: this._to_time_field.get_value(),
-									status: this._status_field.get_value(),
-									search_term: this._search_field.get_value(),
-									limit: 50,
-								},
+								args: args,
 								callback: function (r) {
 									parent.empty();
 									if (!r.message || r.message.length === 0) {
