@@ -171,35 +171,44 @@ frappe.provide('erpnext.PointOfSale');
 								'</div>';
 							parent.html(html);
 		
-							// Date
-							this._date_field = frappe.ui.form.make_control({
-								df: {
-									label: __('Date'), fieldtype: "Date", fieldname: "reprint_date",
-									default: frappe.datetime.get_today(),
-									onchange: function () { me._refresh_invoice_list(); },
+						// Date
+						this._date_field = frappe.ui.form.make_control({
+							df: {
+								label: __('Date'), fieldtype: "Date", fieldname: "reprint_date",
+								default: frappe.datetime.get_today(),
+								onchange: function () {
+									clearTimeout(me._filter_timer);
+									me._filter_timer = setTimeout(function () { me._refresh_invoice_list(); }, 300);
 								},
+							},
 								parent: parent.find(".filter-date-field"),
 								render_input: true,
 							});
 							this._date_field.refresh();
 		
-							// Time from
-							this._from_time_field = frappe.ui.form.make_control({
-								df: {
-									label: __('From Time'), fieldtype: "Time", fieldname: "reprint_from_time",
-									onchange: function () { me._refresh_invoice_list(); },
+						// Time from
+						this._from_time_field = frappe.ui.form.make_control({
+							df: {
+								label: __('From Time'), fieldtype: "Time", fieldname: "reprint_from_time",
+								onchange: function () {
+									clearTimeout(me._filter_timer);
+									me._filter_timer = setTimeout(function () { me._refresh_invoice_list(); }, 300);
 								},
+							},
 								parent: parent.find(".filter-time-from-field"),
 								render_input: true,
 							});
 							this._from_time_field.refresh();
 		
-							// Time to
-							this._to_time_field = frappe.ui.form.make_control({
-								df: {
-									label: __('To Time'), fieldtype: "Time", fieldname: "reprint_to_time",
-									onchange: function () { me._refresh_invoice_list(); },
+						// Time to
+						this._to_time_field = frappe.ui.form.make_control({
+							df: {
+								label: __('To Time'), fieldtype: "Time", fieldname: "reprint_to_time",
+								onchange: function () {
+									clearTimeout(me._filter_timer);
+									me._filter_timer = setTimeout(function () { me._refresh_invoice_list(); }, 300);
 								},
+							},
 								parent: parent.find(".filter-time-to-field"),
 								render_input: true,
 							});
@@ -221,14 +230,17 @@ frappe.provide('erpnext.PointOfSale');
 								}
 							});
 		
-							// Status
-							this._status_field = frappe.ui.form.make_control({
-								df: {
-									label: __('Status'), fieldtype: "Select", fieldname: "reprint_status",
-									options: ["All", "Paid", "Submitted", "Consolidated", "Return", "Partly Paid", "Unpaid", "Credit Note Issued"].join("\n"),
-									default: "All",
-									onchange: function () { me._refresh_invoice_list(); },
+						// Status
+						this._status_field = frappe.ui.form.make_control({
+							df: {
+								label: __('Status'), fieldtype: "Select", fieldname: "reprint_status",
+								options: ["All", "Paid", "Submitted", "Consolidated", "Return", "Partly Paid", "Unpaid", "Credit Note Issued"].join("\n"),
+								default: "All",
+								onchange: function () {
+									clearTimeout(me._filter_timer);
+									me._filter_timer = setTimeout(function () { me._refresh_invoice_list(); }, 300);
 								},
+							},
 								parent: parent.find(".filter-status-field"),
 								render_input: true,
 							});
@@ -279,16 +291,19 @@ frappe.provide('erpnext.PointOfSale');
 							});
 						}
 		
-						_get_invoice_row_html(invoice) {
-							var datetime = frappe.datetime.str_to_user(
-								invoice.posting_date + " " + (invoice.posting_time || "00:00:00")
-							);
-		
-							var status_color = "grey";
-							if (["Paid", "Consolidated"].includes(invoice.status)) status_color = "green";
-							else if (["Partly Paid"].includes(invoice.status)) status_color = "yellow";
-							else if (["Unpaid", "Submitted"].includes(invoice.status)) status_color = "orange";
-							else if (["Return", "Credit Note Issued"].includes(invoice.status)) status_color = "grey";
+					_get_status_color(status) {
+						if (["Paid", "Consolidated"].includes(status)) return "green";
+						if (["Partly Paid"].includes(status)) return "yellow";
+						if (["Unpaid", "Submitted"].includes(status)) return "orange";
+						return "grey";
+					}
+
+					_get_invoice_row_html(invoice) {
+						var datetime = frappe.datetime.str_to_user(
+							invoice.posting_date + " " + (invoice.posting_time || "00:00:00")
+						);
+
+						var status_color = this._get_status_color(invoice.status);
 		
 							return (
 								'<div class="reprint-invoice-row" data-invoice="' + frappe.utils.escape_html(invoice.name) + '"' +
@@ -332,12 +347,9 @@ frappe.provide('erpnext.PointOfSale');
 							right.find(".reprint-placeholder").hide();
 							var detail = right.find(".reprint-detail");
 							detail.show();
-							this._reprint_invoice_data = data;
+						this._reprint_invoice_data = data;
 
-							var status_color = "grey";
-							if (["Paid", "Consolidated"].includes(data.status)) status_color = "green";
-							else if (["Partly Paid"].includes(data.status)) status_color = "yellow";
-							else if (["Unpaid", "Submitted"].includes(data.status)) status_color = "orange";
+						var status_color = this._get_status_color(data.status);
 
 							var header =
 								'<div class="upper-section" style="display: flex; justify-content: space-between; margin-bottom: 12px;">' +
@@ -362,7 +374,7 @@ frappe.provide('erpnext.PointOfSale');
 											'<input type="checkbox" class="reprint-item-check" data-item-name="' + frappe.utils.escape_html(item.name) + '" style="margin-right: 8px;">' +
 											'<div style="flex: 1; min-width: 0;">' +
 												'<div>' + frappe.utils.escape_html(item.item_name) + '</div>' +
-												(item.discount_percentage ? '<div style="font-size: 11px; color: var(--text-muted);">(' + item.discount_percentage + '% off) ' + format_currency(item.rate, data.currency) + '</div>' : '') +
+												(item.discount_percentage ? '<div style="font-size: 11px; color: var(--text-muted);">(' + parseFloat(item.discount_percentage) + '% off) ' + format_currency(item.rate, data.currency) + '</div>' : '') +
 											'</div>' +
 											'<div style="text-align: right; flex-shrink: 0;">' +
 												'<div>' + item.qty + ' ' + frappe.utils.escape_html(item.uom) + '</div>' +
@@ -424,8 +436,8 @@ frappe.provide('erpnext.PointOfSale');
 
 							detail.html(header + items_html + totals_html + payments_html + btns_html);
 
-							// Bind checkbox change to toggle selected-items button
-							detail.on("change", ".reprint-item-check", function () {
+						// Bind checkbox change to toggle selected-items button
+						detail.off("change", ".reprint-item-check").on("change", ".reprint-item-check", function () {
 								var checked = detail.find(".reprint-item-check:checked").length;
 								detail.find(".btn-print-selected").toggle(checked > 0);
 							});
@@ -444,7 +456,7 @@ frappe.provide('erpnext.PointOfSale');
 							frappe.utils.print(
 								"POS Invoice",
 								data.name,
-								this.frm.pos_print_format,
+								(this.frm && this.frm.pos_print_format) || "Standard",
 								data.letter_head,
 								data.language || frappe.boot.lang
 							);
