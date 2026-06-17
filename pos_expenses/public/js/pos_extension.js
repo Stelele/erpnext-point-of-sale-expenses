@@ -310,6 +310,177 @@ frappe.provide('erpnext.PointOfSale');
 								'</div>'
 							);
 						}
+
+						_load_invoice_detail(invoice_name) {
+							var me = this;
+							this._reprint_selected_invoice_name = invoice_name;
+
+							frappe.call({
+								method: "pos_expenses.api.get_invoice_detail_for_reprint",
+								args: { invoice_name: invoice_name },
+								callback: function (r) {
+									if (r.message) {
+										me._render_invoice_detail(r.message);
+									}
+								},
+							});
+						}
+
+						_render_invoice_detail(data) {
+							var me = this;
+							var right = this._reprint_dialog.$wrapper.find(".reprint-right");
+							right.find(".reprint-placeholder").hide();
+							var detail = right.find(".reprint-detail");
+							detail.show();
+							this._reprint_invoice_data = data;
+
+							var status_color = "grey";
+							if (["Paid", "Consolidated"].includes(data.status)) status_color = "green";
+							else if (["Partly Paid"].includes(data.status)) status_color = "yellow";
+							else if (["Unpaid", "Submitted"].includes(data.status)) status_color = "orange";
+
+							var header =
+								'<div class="upper-section" style="display: flex; justify-content: space-between; margin-bottom: 12px;">' +
+									'<div>' +
+										'<div style="font-weight: 600;">' + frappe.utils.escape_html(data.customer_name) + '</div>' +
+										(data.customer !== data.customer_name ? '<div style="font-size: 12px; color: var(--text-muted);">' + frappe.utils.escape_html(data.customer) + '</div>' : '') +
+										'<div style="font-size: 11px; color: var(--text-muted);">' + __('Sold by') + ': ' + frappe.utils.escape_html(data.owner) + '</div>' +
+									'</div>' +
+									'<div style="text-align: right;">' +
+										'<div style="font-weight: 600;">' + format_currency(data.paid_amount, data.currency) + '</div>' +
+										'<div style="font-size: 12px; color: var(--text-muted);">' + frappe.utils.escape_html(data.name) + '</div>' +
+										'<span class="indicator-pill ' + status_color + '" style="font-size: 10px; margin-top: 2px;">' + __(data.status) + '</span>' +
+									'</div>' +
+								'</div>';
+
+							// Items with checkboxes
+							var items_html = '<div class="label" style="font-weight: 600; margin-bottom: 6px;">' + __('Items') + '</div>';
+							if (data.items && data.items.length) {
+								data.items.forEach(function (item) {
+									items_html +=
+										'<div class="item-row" style="display: flex; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border-color);">' +
+											'<input type="checkbox" class="reprint-item-check" data-item-name="' + frappe.utils.escape_html(item.name) + '" style="margin-right: 8px;">' +
+											'<div style="flex: 1; min-width: 0;">' +
+												'<div>' + frappe.utils.escape_html(item.item_name) + '</div>' +
+												(item.discount_percentage ? '<div style="font-size: 11px; color: var(--text-muted);">(' + item.discount_percentage + '% off) ' + format_currency(item.rate, data.currency) + '</div>' : '') +
+											'</div>' +
+											'<div style="text-align: right; flex-shrink: 0;">' +
+												'<div>' + item.qty + ' ' + frappe.utils.escape_html(item.uom) + '</div>' +
+												'<div style="font-weight: 500;">' + format_currency(item.amount, data.currency) + '</div>' +
+											'</div>' +
+										'</div>';
+								});
+							}
+
+							// Totals
+							var totals_html =
+								'<div class="label" style="font-weight: 600; margin: 12px 0 6px;">' + __('Totals') + '</div>' +
+								'<div style="display: flex; justify-content: space-between; font-size: 13px;">' +
+									'<div>' + __('Net Total') + '</div>' +
+									'<div>' + format_currency(data.net_total, data.currency) + '</div>' +
+								'</div>';
+							if (data.discount_amount) {
+								totals_html +=
+									'<div style="display: flex; justify-content: space-between; font-size: 13px; color: var(--text-muted);">' +
+										'<div>' + __('Discount') + ' (' + data.additional_discount_percentage + '%)</div>' +
+										'<div>' + format_currency(data.discount_amount, data.currency) + '</div>' +
+									'</div>';
+							}
+							if (data.taxes && data.taxes.length) {
+								data.taxes.forEach(function (t) {
+									totals_html +=
+										'<div style="display: flex; justify-content: space-between; font-size: 13px;">' +
+											'<div>' + frappe.utils.escape_html(t.description) + '</div>' +
+											'<div>' + format_currency(t.tax_amount_after_discount_amount, data.currency) + '</div>' +
+										'</div>';
+								});
+							}
+							totals_html +=
+								'<div style="display: flex; justify-content: space-between; font-weight: 600; padding-top: 4px; border-top: 1px solid var(--border-color);">' +
+									'<div>' + __('Grand Total') + '</div>' +
+									'<div>' + format_currency(data.grand_total, data.currency) + '</div>' +
+								'</div>';
+
+							// Payments
+							var payments_html = '<div class="label" style="font-weight: 600; margin: 12px 0 6px;">' + __('Payments') + '</div>';
+							if (data.payments && data.payments.length) {
+								data.payments.forEach(function (p) {
+									payments_html +=
+										'<div style="display: flex; justify-content: space-between; font-size: 13px;">' +
+											'<div>' + __(p.mode_of_payment) + '</div>' +
+											'<div>' + format_currency(p.amount, data.currency) + '</div>' +
+										'</div>';
+								});
+							} else {
+								payments_html += '<div class="text-muted">' + __('No payments recorded') + '</div>';
+							}
+
+							// Action buttons
+							var btns_html =
+								'<div style="margin-top: 16px; display: flex; gap: 8px;">' +
+									'<button class="btn btn-primary btn-print-full">' + __('Print Full Invoice') + '</button>' +
+									'<button class="btn btn-default btn-print-selected" style="display: none;">' + __('Print Selected Items') + '</button>' +
+								'</div>';
+
+							detail.html(header + items_html + totals_html + payments_html + btns_html);
+
+							// Bind checkbox change to toggle selected-items button
+							detail.on("change", ".reprint-item-check", function () {
+								var checked = detail.find(".reprint-item-check:checked").length;
+								detail.find(".btn-print-selected").toggle(checked > 0);
+							});
+
+							// Bind print buttons
+							detail.find(".btn-print-full").on("click", function () {
+								me._print_full_invoice(data);
+							});
+
+							detail.find(".btn-print-selected").on("click", function () {
+								me._print_selected_items(data);
+							});
+						}
+
+						_print_full_invoice(data) {
+							frappe.utils.print(
+								"POS Invoice",
+								data.name,
+								this.frm.pos_print_format,
+								data.letter_head,
+								data.language || frappe.boot.lang
+							);
+						}
+
+						_print_selected_items(data) {
+							var me = this;
+							var checked = this._reprint_dialog.$wrapper.find(".reprint-item-check:checked");
+							var selected = [];
+							checked.each(function () {
+								selected.push($(this).attr("data-item-name"));
+							});
+
+							if (!selected.length) {
+								frappe.show_alert({ message: __('Please select at least one item.'), indicator: "orange" });
+								return;
+							}
+
+							frappe.call({
+								method: "pos_expenses.api.get_partial_print_url",
+								args: {
+									invoice_name: data.name,
+									selected_items: JSON.stringify(selected),
+								},
+								freeze: true,
+								freeze_message: __('Preparing print...'),
+								callback: function (r) {
+									if (r.message && r.message.url) {
+										var w = window.open(frappe.urllib.get_full_url(r.message.url));
+										if (!w) {
+											frappe.msgprint(__("Please enable pop-ups for printing."));
+										}
+									}
+								},
+							});
+						}
 					};
 					callback();
 				});
