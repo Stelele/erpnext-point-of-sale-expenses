@@ -13,6 +13,10 @@ frappe.provide('erpnext.PointOfSale');
 					erpnext.PointOfSale.Controller = class extends Orig {
 						prepare_btns() {
 							super.prepare_btns();
+							this.page.clear_primary_action();
+							this.page.clear_secondary_action();
+							this.page.clear_menu();
+							this.page.clear_inner_toolbar();
 							this.page.add_inner_button(
 								__('Add Expense'),
 								this.open_expense_modal.bind(this)
@@ -20,6 +24,19 @@ frappe.provide('erpnext.PointOfSale');
 							this.page.add_inner_button(
 								__('Reprint Invoices'),
 								this.open_reprint_invoices_modal.bind(this)
+							);
+							this.page.add_inner_button(
+								__('New Invoice'),
+								this.new_invoice_event.bind(this),
+								null,
+								"primary"
+							);
+							this.page.add_inner_button(
+								__('Close POS'),
+								this.close_pos.bind(this),
+								null,
+								"danger",
+								true
 							);
 						}
 
