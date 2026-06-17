@@ -1,5 +1,6 @@
 import frappe
-from frappe.utils import flt, today
+import json
+from frappe.utils import flt, today, cint
 
 
 @frappe.whitelist()
@@ -71,3 +72,96 @@ def indirect_expense_account_query(doctype, txt, searchfield, start, page_len, f
 			"start": start,
 		},
 	)
+
+
+@frappe.whitelist()
+def get_pos_invoices_for_reprint(date=None, from_time=None, to_time=None,
+                                  status=None, search_term=None, limit=50):
+	filters = {"docstatus": ["!=", 0], "posting_date": date}
+
+	if status and status != "All":
+		filters["status"] = status
+
+	if from_time and to_time:
+		filters["posting_time"] = ["between", [from_time, to_time]]
+	elif from_time:
+		filters["posting_time"] = [">=", from_time]
+	elif to_time:
+		filters["posting_time"] = ["<=", to_time]
+
+	or_filters = None
+	if search_term:
+		or_filters = {
+			"name": ["like", f"%{search_term}%"],
+			"customer_name": ["like", f"%{search_term}%"],
+		}
+
+	return frappe.get_all(
+		"POS Invoice",
+		filters=filters,
+		or_filters=or_filters,
+		fields=[
+			"name", "customer", "customer_name", "status",
+			"grand_total", "currency", "posting_date", "posting_time",
+			"paid_amount", "total_qty",
+		],
+		order_by="posting_date desc, posting_time desc",
+		limit=cint(limit),
+	)
+
+
+@frappe.whitelist()
+def get_invoice_detail_for_reprint(invoice_name):
+	doc = frappe.get_doc("POS Invoice", invoice_name)
+
+	items = []
+	for item in doc.items:
+		items.append({
+			"name": item.name,
+			"item_code": item.item_code,
+			"item_name": item.item_name,
+			"qty": item.qty,
+			"uom": item.uom,
+			"rate": item.rate,
+			"amount": item.amount,
+			"discount_percentage": item.discount_percentage,
+			"price_list_rate": item.price_list_rate,
+		})
+
+	taxes = []
+	for tax in doc.taxes:
+		taxes.append({
+			"description": tax.description,
+			"tax_amount_after_discount_amount": tax.tax_amount_after_discount_amount,
+		})
+
+	payments = []
+	for payment in doc.get("payments", []):
+		payments.append({
+			"mode_of_payment": payment.mode_of_payment,
+			"amount": payment.amount,
+		})
+
+	return {
+		"doctype": doc.doctype,
+		"name": doc.name,
+		"customer": doc.customer,
+		"customer_name": doc.customer_name,
+		"status": doc.status,
+		"posting_date": str(doc.posting_date),
+		"posting_time": str(doc.posting_time) if doc.posting_time else "",
+		"paid_amount": doc.paid_amount,
+		"owner": doc.owner,
+		"currency": doc.currency,
+		"net_total": doc.net_total,
+		"grand_total": doc.grand_total,
+		"discount_amount": doc.discount_amount,
+		"additional_discount_percentage": doc.additional_discount_percentage,
+		"total_qty": doc.total_qty,
+		"letter_head": doc.letter_head,
+		"language": doc.language,
+		"is_return": doc.is_return,
+		"items": items,
+		"taxes": taxes,
+		"payments": payments,
+	}
