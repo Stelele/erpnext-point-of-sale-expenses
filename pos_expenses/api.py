@@ -165,3 +165,55 @@ def get_invoice_detail_for_reprint(invoice_name):
 		"taxes": taxes,
 		"payments": payments,
 	}
+
+
+@frappe.whitelist()
+def get_partial_print_url(invoice_name, selected_items):
+	import hashlib
+
+	selected_items = json.loads(selected_items)
+
+	doc = frappe.get_doc("POS Invoice", invoice_name)
+	doc.items = [item for item in doc.items if item.name in selected_items]
+	doc.calculate_taxes_and_totals()
+
+	print_format = None
+	if doc.pos_profile:
+		print_format = frappe.db.get_value("POS Profile", doc.pos_profile, "print_format")
+	if not print_format:
+		print_format = "Standard"
+
+	html = frappe.utils.print_utils.get_print(
+		doctype="POS Invoice",
+		name=invoice_name,
+		print_format=print_format,
+		doc=doc,
+		as_pdf=False,
+		no_letterhead=0,
+		letterhead=doc.letter_head,
+	)
+
+	key = hashlib.md5((invoice_name + str(selected_items)).encode()).hexdigest()
+	frappe.cache().set_value(f"reprint_parts:{key}", html, expires_in_sec=600)
+
+	return {"url": f"/api/method/pos_expenses.api.show_partial_print?key={key}"}
+
+
+@frappe.whitelist(allow_guest=False)
+def show_partial_print(key):
+	html = frappe.cache().get_value(f"reprint_parts:{key}")
+
+	if not html:
+		frappe.throw("The print preview has expired. Please re-select items and try again.")
+
+	frappe.response["type"] = "html"
+	return """
+	<!DOCTYPE html>
+	<html>
+	<head><meta charset="utf-8"><title>Print Receipt</title>
+	<style>@media print { body { margin: 0; padding: 0; } }</style>
+	<script>window.onload = function() { window.print(); };</script>
+	</head>
+	<body>{html}</body>
+	</html>
+	""".format(html=html)
