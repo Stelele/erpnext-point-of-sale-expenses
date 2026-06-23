@@ -41,6 +41,8 @@ frappe.provide('erpnext.PointOfSale');
 						}
 
 						open_expense_modal() {
+							const pos_profile = this.pos_profile;
+							const company = this.company;
 							var d = new frappe.ui.Dialog({
 								title: 'Add Expense',
 								fields: [
@@ -55,13 +57,16 @@ frappe.provide('erpnext.PointOfSale');
 										label: 'Expense Account',
 										fieldname: 'expense_account',
 										fieldtype: 'Link',
-										options: 'Account',
+										options: 'POS Expense Account',
 										reqd: 1,
 										only_select: 1,
 										get_query: function () {
 											return {
-												query: "pos_expenses.api.indirect_expense_account_query",
-												filters: {}
+												query: "pos_expenses.api.pos_expense_account_query",
+												filters: {
+													pos_profile: pos_profile,
+													company: company
+												}
 											};
 										}
 									},

@@ -7,12 +7,24 @@ from frappe.utils import flt, today, cint
 def post_expense(posting_date=None, expense_account=None, amount=0, remarks=None):
 	frappe.has_permission("Journal Entry", throw=True)
 
+	real_account = frappe.db.get_value("POS Expense Account", expense_account, "account")
+	if not real_account:
+		frappe.throw(f"POS Expense Account '{expense_account}' not found.")
+
 	company = frappe.defaults.get_user_default("Company")
-
 	payment_account = frappe.db.get_value("Account", {"account_type": "Cash", "company": company})
-
 	if not payment_account:
 		frappe.throw("Could not find a default Cash account for this company.")
+
+	expense_currency = frappe.db.get_value("Account", real_account, "account_currency")
+	payment_currency = frappe.db.get_value("Account", payment_account, "account_currency")
+
+	if expense_currency != payment_currency:
+		frappe.throw(
+			f"Expense account '{real_account}' is in {expense_currency} "
+			f"but the Cash account is in {payment_currency}. "
+			"Please use accounts in the same currency."
+		)
 
 	je = frappe.new_doc("Journal Entry")
 	je.voucher_type = "Journal Entry"
@@ -21,7 +33,7 @@ def post_expense(posting_date=None, expense_account=None, amount=0, remarks=None
 	je.remark = remarks
 
 	je.append("accounts", {
-		"account": expense_account,
+		"account": real_account,
 		"debit_in_account_currency": flt(amount),
 		"credit_in_account_currency": 0
 	})
@@ -38,12 +50,19 @@ def post_expense(posting_date=None, expense_account=None, amount=0, remarks=None
 	return je.name
 
 
+# Used by POS Expense Account form to filter account selector
+# to only leaf accounts under the Indirect Expenses group of a company.
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def indirect_expense_account_query(doctype, txt, searchfield, start, page_len, filters):
 	indirect = frappe.db.get_value(
 		"Account",
-		{"account_name": "Indirect Expenses", "root_type": "Expense", "is_group": 1},
+		{
+			"account_name": "Indirect Expenses",
+			"root_type": "Expense",
+			"is_group": 1,
+			"company": filters.get("company"),
+		},
 		["lft", "rgt"],
 		as_dict=True,
 	)
@@ -72,6 +91,77 @@ def indirect_expense_account_query(doctype, txt, searchfield, start, page_len, f
 			"start": start,
 		},
 	)
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def pos_expense_account_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Return POS Expense Accounts with profile-aware override logic.
+
+	Profile-specific records (matching filters.pos_profile) override
+	system defaults (pos_profile IS NULL). Disabled records are excluded.
+	"""
+	pos_profile = filters.get("pos_profile")
+	company = filters.get("company")
+
+	search_pattern = f"%{txt}%" if txt else "%"
+
+	if pos_profile:
+		return frappe.db.sql(
+			"""
+			SELECT name, friendly_name
+			FROM (
+				SELECT name, friendly_name, account, 1 AS priority
+				FROM `tabPOS Expense Account`
+				WHERE pos_profile = %(pos_profile)s
+				  AND company = %(company)s
+				  AND enabled = 1
+				  AND (friendly_name LIKE %(txt)s OR account LIKE %(txt)s)
+
+				UNION ALL
+
+				SELECT name, friendly_name, account, 2 AS priority
+				FROM `tabPOS Expense Account`
+				WHERE pos_profile IS NULL
+				  AND company = %(company)s
+				  AND enabled = 1
+				  AND (friendly_name LIKE %(txt)s OR account LIKE %(txt)s)
+				  AND account NOT IN (
+					  SELECT account FROM `tabPOS Expense Account`
+					  WHERE pos_profile = %(pos_profile)s
+					    AND company = %(company)s
+				  )
+			) AS merged
+			ORDER BY priority, friendly_name
+			LIMIT %(page_len)s OFFSET %(start)s
+			""",
+			{
+				"pos_profile": pos_profile,
+				"company": company,
+				"txt": search_pattern,
+				"page_len": page_len,
+				"start": start,
+			},
+		)
+	else:
+		return frappe.db.sql(
+			"""
+			SELECT name, friendly_name
+			FROM `tabPOS Expense Account`
+			WHERE pos_profile IS NULL
+			  AND company = %(company)s
+			  AND enabled = 1
+			  AND (friendly_name LIKE %(txt)s OR account LIKE %(txt)s)
+			ORDER BY friendly_name
+			LIMIT %(page_len)s OFFSET %(start)s
+			""",
+			{
+				"company": company,
+				"txt": search_pattern,
+				"page_len": page_len,
+				"start": start,
+			},
+		)
 
 
 @frappe.whitelist()
