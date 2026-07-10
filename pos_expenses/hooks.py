@@ -256,6 +256,8 @@ required_apps = ["erpnext"]
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
+doctype_js = {"POS Closing Entry": "public/js/pos_closing_entry.js"}
+
 page_js = {
     "point-of-sale": "public/js/pos_extension.js"
 }
