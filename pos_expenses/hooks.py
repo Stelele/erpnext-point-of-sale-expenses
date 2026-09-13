@@ -186,6 +186,12 @@ required_apps = ["erpnext"]
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "pos_expenses.event.get_events"
 # }
+
+override_whitelisted_methods = {
+	"erpnext.selling.page.point_of_sale.point_of_sale.get_parent_item_group": (
+		"pos_expenses.overrides.point_of_sale.get_parent_item_group"
+	),
+}
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
