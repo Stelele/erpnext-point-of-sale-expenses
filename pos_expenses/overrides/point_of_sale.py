@@ -5,18 +5,28 @@ import frappe
 def get_parent_item_group(pos_profile):
 	"""Deterministic default item group for POS.
 
-	Upstream returns list(set(...))[0] which is unordered; after the v16.34
-	escaping fix this can resolve to an empty leaf group, making the POS
-	item grid load empty.
+	The lowest common ancestor of the POS Profile's configured item groups.
+	Upstream returns an arbitrary member of list(set(...)), which can be a
+	narrow subtree and hide most of the catalog from the opening grid.
 	"""
+	root = frappe.db.get_value("Item Group", {"is_group": 1, "lft": 1}, "name")
+
 	profile = frappe.get_cached_doc("POS Profile", pos_profile)
-	if profile.get("item_groups"):
-		return profile.item_groups[0].item_group
+	groups = [row.item_group for row in profile.get("item_groups") or []]
+	if not groups:
+		return root
 
-	from erpnext.accounts.doctype.pos_profile.pos_profile import get_item_groups
+	rows = frappe.get_all("Item Group", filters={"name": ("in", groups)}, fields=["lft", "rgt"])
+	if not rows:
+		return root
 
-	item_groups = get_item_groups(pos_profile)
-	if not item_groups:
-		item_groups = frappe.get_all("Item Group", {"lft": 1, "is_group": 1}, pluck="name")
-
-	return sorted(item_groups)[0] if item_groups else None
+	return frappe.get_all(
+		"Item Group",
+		filters={
+			"lft": ("<=", min(r.lft for r in rows)),
+			"rgt": (">=", max(r.rgt for r in rows)),
+		},
+		pluck="name",
+		order_by="lft desc",
+		limit=1,
+	)[0]
