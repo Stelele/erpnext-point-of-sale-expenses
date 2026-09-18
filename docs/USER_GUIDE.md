@@ -54,7 +54,7 @@
    - Item name and code
    - Maximum **returnable qty** (original qty minus already-returned qty)
    - Original quantity and amount
-5. Check the items you want to return and enter a quantity (1 to max returnable).
+5. Check the items you want to return and enter a quantity (any value greater than 0, up to the max returnable).
 6. Click **Return Everything** to return all available items, or **Return Selected Items** to return only the checked ones.
 7. Confirm the action in the confirmation dialog.
 8. A return invoice is created successfully; the cashier is routed back to the POS page.
@@ -71,7 +71,7 @@
 |---|---|
 | **I don't see the Add Expense button** | Ensure a POS Expense Account is enabled and (if using a POS Profile) that the current session matches that profile. |
 | **The account I need isn't in the dropdown** | Check that the POS Expense Account record is **Enabled** and that the Account is linked to the correct Company. |
-| **I get "Could not find a default Cash account"** | Set up an Account with `account_type: Cash` under the company used in the POS session. |
+| **I get "Could not find a default Cash account"** | Set up an Account with `account_type: Cash` under the user's **default company** — `post_expense` uses `frappe.defaults.get_user_default("Company")`, not the POS session's company. |
 | **No invoices appear in Reprint/Refund** | Invoices must be **submitted** (docstatus = 1). Draft or cancelled invoices are not shown. |
 | **Return quantity is less than expected** | The max returnable quantity = original qty minus any already-returned qty for that invoice. |
 | **After submitting POS Closing Entry, I'm not back at POS** | This is by design — the form routes to the Point-of-Sale page after submit. |

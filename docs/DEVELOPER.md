@@ -122,7 +122,7 @@ The extension also injects the **POS Closing Entry** behavior: on-submit of the 
    bench --site <site> install-app pos_expenses
    ```
 
-3. **Enable developer mode** (for Python type checking and hot reload):
+3. **Enable developer mode** (persists DocType/Report schema changes to app files instead of only the database — Python edits still require a `bench restart`):
    ```bash
    bench --site <site> set-config developer_mode 1
    ```
@@ -157,7 +157,7 @@ The extension also injects the **POS Closing Entry** behavior: on-submit of the 
 
 ### Testing Notes
 
-- **Expense flow**: The `post_expense` method creates a Journal Entry with two accounts: the POS Expense Account (debit) and the company's Cash account (credit). Currencies must match. The method requires the user to have "Journal Entry" permission.
+- **Expense flow**: The `post_expense` method creates and submits a Journal Entry with two account legs: the debit leg is the mapped Account resolved from the POS Expense Account record via `frappe.db.get_value("POS Expense Account", expense_account, "account")` (api.py line 15) — not the mapping record itself — and the credit leg is the company's Cash account. Currencies must match. The method requires the user to have "Journal Entry" permission.
 - **Refund flow**: `process_pos_refund` uses ERPNext's `make_return_doc` under the hood. It validates that quantities do not exceed returnable limits (original qty minus previously returned qty).
 - **Account query**: `pos_expense_account_query` uses a UNION ALL to profile-specific records (priority 1) then system-wide defaults (priority 2), excluding any system-wide accounts that are already covered by a profile-specific record.
 - **Invoice reprint**: `get_partial_print_url` caches HTML per key (MD5 of invoice_name + selected_items) for 600 seconds. The `show_partial_print` method returns a self-printing HTML page.
