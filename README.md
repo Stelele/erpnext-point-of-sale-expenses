@@ -13,7 +13,13 @@ Easily log expenses without needing to leave the point of sale page. For fast ea
 
 ### Screenshots
 
-Screenshots coming soon — see docs/USER_GUIDE.md for the walkthrough.
+The Add Expense modal, available anywhere on the POS page:
+
+![Add Expense modal](docs/images/add-expense-modal.png)
+
+POS Expense Account mapping setup:
+
+![POS Expense Account setup](docs/images/expense-account-setup.png)
 
 ### Installation
 
