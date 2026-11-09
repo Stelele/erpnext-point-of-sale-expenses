@@ -622,7 +622,7 @@ frappe.provide("erpnext.PointOfSale");
 							frappe.utils.print(
 								"POS Invoice",
 								data.name,
-								(this.frm && this.frm.pos_print_format) || "Standard",
+								this.frm?.pos_print_format || "Standard",
 								data.letter_head,
 								data.language || frappe.boot.lang
 							);
