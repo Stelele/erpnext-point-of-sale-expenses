@@ -1,5 +1,6 @@
 import frappe
 import json
+from frappe import _
 from frappe.utils import flt, today, cint
 from erpnext.controllers.sales_and_purchase_return import (
 	get_invoice_item_returned_qty,
@@ -374,15 +375,15 @@ def process_pos_refund(invoice_name, return_items):
 	return_items = json.loads(return_items)
 
 	if not return_items or not isinstance(return_items, list):
-		frappe.throw(__("No items selected for return."))
+		frappe.throw(_("No items selected for return."))
 
 	source_doc = frappe.get_doc("POS Invoice", invoice_name)
 
 	if source_doc.docstatus != 1:
-		frappe.throw(__("Only submitted invoices can be returned."))
+		frappe.throw(_("Only submitted invoices can be returned."))
 
 	if source_doc.is_return:
-		frappe.throw(__("Cannot return a return invoice."))
+		frappe.throw(_("Cannot return a return invoice."))
 
 	# Validate all items exist and quantities are within returnable limits
 	source_items_by_name = {item.name: item for item in source_doc.items}
@@ -390,11 +391,11 @@ def process_pos_refund(invoice_name, return_items):
 		item_name = ri.get("item_name")
 		qty = flt(ri.get("qty", 0))
 		if not item_name:
-			frappe.throw(__("Each return item must have an item_name."))
+			frappe.throw(_("Each return item must have an item_name."))
 		if qty <= 0:
-			frappe.throw(__("Return quantity must be greater than zero for item {0}.").format(item_name))
+			frappe.throw(_("Return quantity must be greater than zero for item {0}.").format(item_name))
 		if item_name not in source_items_by_name:
-			frappe.throw(__("Item {0} not found in invoice {1}.").format(item_name, invoice_name))
+			frappe.throw(_("Item {0} not found in invoice {1}.").format(item_name, invoice_name))
 		source_item = source_items_by_name[item_name]
 		item_qty = abs(source_item.qty) if source_item.qty else 0
 		returned = get_invoice_item_returned_qty("POS Invoice", invoice_name, source_doc.customer, item_name)
@@ -402,7 +403,7 @@ def process_pos_refund(invoice_name, return_items):
 		max_returnable = item_qty - returned_qty
 		if qty > max_returnable:
 			frappe.throw(
-				__("Return quantity {0} for item {1} exceeds maximum returnable quantity {2}.")
+				_("Return quantity {0} for item {1} exceeds maximum returnable quantity {2}.")
 				.format(qty, item_name, max_returnable)
 			)
 
@@ -417,7 +418,7 @@ def process_pos_refund(invoice_name, return_items):
 	# Create the return document via ERPNext's standard mechanism
 	target_doc = make_return_doc("POS Invoice", invoice_name, target_doc=None)
 	if not target_doc:
-		frappe.throw(__("Could not create return invoice."))
+		frappe.throw(_("Could not create return invoice."))
 
 	if is_partial:
 		# Remove items not in return_items and adjust quantities
@@ -431,7 +432,7 @@ def process_pos_refund(invoice_name, return_items):
 				items_to_keep.append(item)
 
 		if not items_to_keep:
-			frappe.throw(__("No matching items found in return document."))
+			frappe.throw(_("No matching items found in return document."))
 
 		target_doc.items = items_to_keep
 		target_doc.calculate_taxes_and_totals()
