@@ -1,4 +1,5 @@
 import json
+import math
 
 import frappe
 from erpnext.controllers.sales_and_purchase_return import (
@@ -442,6 +443,7 @@ def process_pos_refund(invoice_name: str, return_items: str):
 		frappe.throw(_("No items selected for return."))
 
 	source_doc = frappe.get_doc("POS Invoice", invoice_name)
+	frappe.has_permission("POS Invoice", "create", source_doc, throw=True)
 
 	if source_doc.docstatus != 1:
 		frappe.throw(_("Only submitted invoices can be returned."))
@@ -476,7 +478,10 @@ def process_pos_refund(invoice_name: str, return_items: str):
 	all_source_item_names = [item.name for item in source_doc.items]
 	return_item_names = [ri["item_name"] for ri in return_items]
 	is_partial = len(return_item_names) < len(all_source_item_names) or any(
-		ri.get("qty") != abs(source_items_by_name[ri["item_name"]].qty) for ri in return_items
+		not math.isclose(
+			flt(ri.get("qty")), abs(flt(source_items_by_name[ri["item_name"]].qty)), rel_tol=1e-5
+		)
+		for ri in return_items
 	)
 
 	# Create the return document via ERPNext's standard mechanism
@@ -536,6 +541,7 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 	selected_items = json.loads(selected_items)
 
 	doc = frappe.get_doc("POS Invoice", invoice_name)
+	frappe.has_permission("POS Invoice", "read", doc, throw=True)
 	doc.items = [item for item in doc.items if item.name in selected_items]
 	doc.calculate_taxes_and_totals()
 
@@ -562,17 +568,25 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 		letterhead=letter_head,
 	)
 
-	key = hashlib.md5((invoice_name + str(selected_items)).encode()).hexdigest()
-	frappe.cache().set_value(f"reprint_parts:{key}", html, expires_in_sec=600)
+	# Bind the cache entry to the requesting user: keys are predictable
+	# (md5 of invoice + selected rows), so possession of a key must not
+	# let another user read someone else's cached receipt.
+	key = hashlib.md5((invoice_name + str(selected_items) + frappe.session.user).encode()).hexdigest()
+	frappe.cache().set_value(
+		f"reprint_parts:{key}",
+		{"user": frappe.session.user, "html": html},
+		expires_in_sec=600,
+	)
 
 	return {"url": f"/api/method/pos_expenses.api.show_partial_print?key={key}"}
 
 
 @frappe.whitelist(allow_guest=False)
 def show_partial_print(key: str):
-	html = frappe.cache().get_value(f"reprint_parts:{key}")
+	cache = frappe.cache().get_value(f"reprint_parts:{key}")
+	html = (cache or {}).get("html")
 
-	if not html:
+	if not html or cache.get("user") != frappe.session.user:
 		frappe.throw(_("The print preview has expired. Please re-select items and try again."))
 
 	full_page = f"""<!DOCTYPE html>
