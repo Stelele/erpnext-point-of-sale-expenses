@@ -1,7 +1,9 @@
 app_name = "pos_expenses"
 app_title = "Pos Expenses"
 app_publisher = "Gift Mugweni"
-app_description = "Easily log expenses without needing to leave the point of sale page. For fast easy recording"
+app_description = (
+	"Easily log expenses without needing to leave the point of sale page. For fast easy recording"
+)
 app_email = "giftmugweni@gmail.com"
 app_license = "mit"
 
@@ -258,6 +260,4 @@ required_apps = ["erpnext"]
 
 doctype_js = {"POS Closing Entry": "public/js/pos_closing_entry.js"}
 
-page_js = {
-    "point-of-sale": "public/js/pos_extension.js"
-}
+page_js = {"point-of-sale": "public/js/pos_extension.js"}

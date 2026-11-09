@@ -1,12 +1,13 @@
-import frappe
 import json
-from frappe import _
-from frappe.utils import flt, today, cint
+
+import frappe
 from erpnext.controllers.sales_and_purchase_return import (
 	get_invoice_item_returned_qty,
 	is_invoice_returnable,
 	make_return_doc,
 )
+from frappe import _
+from frappe.utils import cint, flt, today
 
 
 @frappe.whitelist()
@@ -38,17 +39,19 @@ def post_expense(posting_date=None, expense_account=None, amount=0, remarks=None
 	je.posting_date = posting_date or today()
 	je.remark = remarks
 
-	je.append("accounts", {
-		"account": real_account,
-		"debit_in_account_currency": flt(amount),
-		"credit_in_account_currency": 0
-	})
+	je.append(
+		"accounts",
+		{"account": real_account, "debit_in_account_currency": flt(amount), "credit_in_account_currency": 0},
+	)
 
-	je.append("accounts", {
-		"account": payment_account,
-		"debit_in_account_currency": 0,
-		"credit_in_account_currency": flt(amount)
-	})
+	je.append(
+		"accounts",
+		{
+			"account": payment_account,
+			"debit_in_account_currency": 0,
+			"credit_in_account_currency": flt(amount),
+		},
+	)
 
 	je.insert()
 	je.submit()
@@ -171,8 +174,9 @@ def pos_expense_account_query(doctype, txt, searchfield, start, page_len, filter
 
 
 @frappe.whitelist()
-def get_pos_invoices_for_reprint(date=None, from_time=None, to_time=None,
-                                  status=None, search_term=None, limit=50):
+def get_pos_invoices_for_reprint(
+	date=None, from_time=None, to_time=None, status=None, search_term=None, limit=50
+):
 	filters = {"docstatus": 1}
 
 	if date:
@@ -200,9 +204,17 @@ def get_pos_invoices_for_reprint(date=None, from_time=None, to_time=None,
 		filters=filters,
 		or_filters=or_filters,
 		fields=[
-			"name", "customer", "customer_name", "status",
-			"grand_total", "currency", "posting_date", "posting_time",
-			"paid_amount", "total_qty", "owner",
+			"name",
+			"customer",
+			"customer_name",
+			"status",
+			"grand_total",
+			"currency",
+			"posting_date",
+			"posting_time",
+			"paid_amount",
+			"total_qty",
+			"owner",
 		],
 		order_by="posting_date desc, posting_time desc",
 		limit=cint(limit),
@@ -215,31 +227,37 @@ def get_invoice_detail_for_reprint(invoice_name):
 
 	items = []
 	for item in doc.items:
-		items.append({
-			"name": item.name,
-			"item_code": item.item_code,
-			"item_name": item.item_name,
-			"qty": item.qty,
-			"uom": item.uom,
-			"rate": item.rate,
-			"amount": item.amount,
-			"discount_percentage": item.discount_percentage,
-			"price_list_rate": item.price_list_rate,
-		})
+		items.append(
+			{
+				"name": item.name,
+				"item_code": item.item_code,
+				"item_name": item.item_name,
+				"qty": item.qty,
+				"uom": item.uom,
+				"rate": item.rate,
+				"amount": item.amount,
+				"discount_percentage": item.discount_percentage,
+				"price_list_rate": item.price_list_rate,
+			}
+		)
 
 	taxes = []
 	for tax in doc.taxes:
-		taxes.append({
-			"description": tax.description,
-			"tax_amount_after_discount_amount": tax.tax_amount_after_discount_amount,
-		})
+		taxes.append(
+			{
+				"description": tax.description,
+				"tax_amount_after_discount_amount": tax.tax_amount_after_discount_amount,
+			}
+		)
 
 	payments = []
 	for payment in doc.get("payments", []):
-		payments.append({
-			"mode_of_payment": payment.mode_of_payment,
-			"amount": payment.amount,
-		})
+		payments.append(
+			{
+				"mode_of_payment": payment.mode_of_payment,
+				"amount": payment.amount,
+			}
+		)
 
 	return {
 		"doctype": doc.doctype,
@@ -267,8 +285,9 @@ def get_invoice_detail_for_reprint(invoice_name):
 
 
 @frappe.whitelist()
-def get_pos_invoices_for_refund(date=None, from_time=None, to_time=None,
-								status=None, search_term=None, limit=50):
+def get_pos_invoices_for_refund(
+	date=None, from_time=None, to_time=None, status=None, search_term=None, limit=50
+):
 	filters = {"docstatus": 1}
 
 	if date:
@@ -296,9 +315,17 @@ def get_pos_invoices_for_refund(date=None, from_time=None, to_time=None,
 		filters=filters,
 		or_filters=or_filters,
 		fields=[
-			"name", "customer", "customer_name", "status",
-			"grand_total", "currency", "posting_date", "posting_time",
-			"paid_amount", "total_qty", "owner",
+			"name",
+			"customer",
+			"customer_name",
+			"status",
+			"grand_total",
+			"currency",
+			"posting_date",
+			"posting_time",
+			"paid_amount",
+			"total_qty",
+			"owner",
 		],
 		order_by="posting_date desc, posting_time desc",
 		limit=cint(limit),
@@ -324,30 +351,38 @@ def get_invoice_detail_for_refund(invoice_name):
 		returned_qty = abs(returned.qty) if returned and returned.qty else 0
 		returnable_qty = item_qty - returned_qty
 
-		items.append({
-			"name": item.name,
-			"item_code": item.item_code,
-			"item_name": item.item_name,
-			"qty": item_qty,
-			"returnable_qty": max(returnable_qty, 0),
-			"uom": item.uom,
-			"rate": item.rate,
-			"amount": abs(item.amount) if item.amount else 0,
-		})
+		items.append(
+			{
+				"name": item.name,
+				"item_code": item.item_code,
+				"item_name": item.item_name,
+				"qty": item_qty,
+				"returnable_qty": max(returnable_qty, 0),
+				"uom": item.uom,
+				"rate": item.rate,
+				"amount": abs(item.amount) if item.amount else 0,
+			}
+		)
 
 	taxes = []
 	for tax in doc.taxes:
-		taxes.append({
-			"description": tax.description,
-			"tax_amount_after_discount_amount": abs(tax.tax_amount_after_discount_amount) if tax.tax_amount_after_discount_amount else 0,
-		})
+		taxes.append(
+			{
+				"description": tax.description,
+				"tax_amount_after_discount_amount": abs(tax.tax_amount_after_discount_amount)
+				if tax.tax_amount_after_discount_amount
+				else 0,
+			}
+		)
 
 	payments = []
 	for payment in doc.get("payments", []):
-		payments.append({
-			"mode_of_payment": payment.mode_of_payment,
-			"amount": abs(payment.amount) if payment.amount else 0,
-		})
+		payments.append(
+			{
+				"mode_of_payment": payment.mode_of_payment,
+				"amount": abs(payment.amount) if payment.amount else 0,
+			}
+		)
 
 	return {
 		"name": doc.name,
@@ -403,16 +438,16 @@ def process_pos_refund(invoice_name, return_items):
 		max_returnable = item_qty - returned_qty
 		if qty > max_returnable:
 			frappe.throw(
-				_("Return quantity {0} for item {1} exceeds maximum returnable quantity {2}.")
-				.format(qty, item_name, max_returnable)
+				_("Return quantity {0} for item {1} exceeds maximum returnable quantity {2}.").format(
+					qty, item_name, max_returnable
+				)
 			)
 
 	# Get all source item names for comparison
 	all_source_item_names = [item.name for item in source_doc.items]
 	return_item_names = [ri["item_name"] for ri in return_items]
 	is_partial = len(return_item_names) < len(all_source_item_names) or any(
-		ri.get("qty") != abs(source_items_by_name[ri["item_name"]].qty)
-		for ri in return_items
+		ri.get("qty") != abs(source_items_by_name[ri["item_name"]].qty) for ri in return_items
 	)
 
 	# Create the return document via ERPNext's standard mechanism
@@ -520,12 +555,14 @@ def show_partial_print(key):
 <body>{html}</body>
 </html>"""
 
-	frappe.response.update({
-		"http_status_code": 200,
-		"type": "download",
-		"filecontent": full_page,
-		"filename": "receipt.html",
-		"content_type": "text/html",
-		"display_content_as": "inline",
-	})
+	frappe.response.update(
+		{
+			"http_status_code": 200,
+			"type": "download",
+			"filecontent": full_page,
+			"filename": "receipt.html",
+			"content_type": "text/html",
+			"display_content_as": "inline",
+		}
+	)
 	return
