@@ -11,17 +11,22 @@ from frappe.utils import cint, flt, today
 
 
 @frappe.whitelist()
-def post_expense(posting_date=None, expense_account=None, amount=0, remarks=None):
+def post_expense(
+	posting_date: str | None = None,
+	expense_account: str | None = None,
+	amount: float = 0,
+	remarks: str | None = None,
+):
 	frappe.has_permission("Journal Entry", throw=True)
 
 	real_account = frappe.db.get_value("POS Expense Account", expense_account, "account")
 	if not real_account:
-		frappe.throw(f"POS Expense Account '{expense_account}' not found.")
+		frappe.throw(_("POS Expense Account '{0}' not found.").format(frappe.bold(expense_account)))
 
 	company = frappe.defaults.get_user_default("Company")
 	payment_account = frappe.db.get_value("Account", {"account_type": "Cash", "company": company})
 	if not payment_account:
-		frappe.throw("Could not find a default Cash account for this company.")
+		frappe.throw(_("Could not find a default Cash account for this company."))
 
 	expense_currency = frappe.db.get_value("Account", real_account, "account_currency")
 	payment_currency = frappe.db.get_value("Account", payment_account, "account_currency")
@@ -63,7 +68,14 @@ def post_expense(posting_date=None, expense_account=None, amount=0, remarks=None
 # to only leaf accounts under the Indirect Expenses group of a company.
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def indirect_expense_account_query(doctype, txt, searchfield, start, page_len, filters):
+def indirect_expense_account_query(
+	doctype: str = "Account",
+	txt: str = "",
+	searchfield: str = "name",
+	start: int = 0,
+	page_len: int = 20,
+	filters: dict | None = None,
+):
 	indirect = frappe.db.get_value(
 		"Account",
 		{
@@ -104,7 +116,14 @@ def indirect_expense_account_query(doctype, txt, searchfield, start, page_len, f
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def pos_expense_account_query(doctype, txt, searchfield, start, page_len, filters):
+def pos_expense_account_query(
+	doctype: str = "POS Expense Account",
+	txt: str = "",
+	searchfield: str = "friendly_name",
+	start: int = 0,
+	page_len: int = 20,
+	filters: dict | None = None,
+):
 	"""Return POS Expense Accounts with profile-aware override logic.
 
 	Profile-specific records (matching filters.pos_profile) override
@@ -175,7 +194,12 @@ def pos_expense_account_query(doctype, txt, searchfield, start, page_len, filter
 
 @frappe.whitelist()
 def get_pos_invoices_for_reprint(
-	date=None, from_time=None, to_time=None, status=None, search_term=None, limit=50
+	date: str | None = None,
+	from_time: str | None = None,
+	to_time: str | None = None,
+	status: str | None = None,
+	search_term: str | None = None,
+	limit: int = 50,
 ):
 	filters = {"docstatus": 1}
 
@@ -222,7 +246,7 @@ def get_pos_invoices_for_reprint(
 
 
 @frappe.whitelist()
-def get_invoice_detail_for_reprint(invoice_name):
+def get_invoice_detail_for_reprint(invoice_name: str):
 	doc = frappe.get_doc("POS Invoice", invoice_name)
 
 	items = []
@@ -286,7 +310,12 @@ def get_invoice_detail_for_reprint(invoice_name):
 
 @frappe.whitelist()
 def get_pos_invoices_for_refund(
-	date=None, from_time=None, to_time=None, status=None, search_term=None, limit=50
+	date: str | None = None,
+	from_time: str | None = None,
+	to_time: str | None = None,
+	status: str | None = None,
+	search_term: str | None = None,
+	limit: int = 50,
 ):
 	filters = {"docstatus": 1}
 
@@ -341,7 +370,7 @@ def get_pos_invoices_for_refund(
 
 
 @frappe.whitelist()
-def get_invoice_detail_for_refund(invoice_name):
+def get_invoice_detail_for_refund(invoice_name: str):
 	doc = frappe.get_doc("POS Invoice", invoice_name)
 
 	items = []
@@ -406,7 +435,7 @@ def get_invoice_detail_for_refund(invoice_name):
 
 
 @frappe.whitelist()
-def process_pos_refund(invoice_name, return_items):
+def process_pos_refund(invoice_name: str, return_items: str):
 	return_items = json.loads(return_items)
 
 	if not return_items or not isinstance(return_items, list):
@@ -501,7 +530,7 @@ def process_pos_refund(invoice_name, return_items):
 
 
 @frappe.whitelist()
-def get_partial_print_url(invoice_name, selected_items):
+def get_partial_print_url(invoice_name: str, selected_items: str):
 	import hashlib
 
 	selected_items = json.loads(selected_items)
@@ -540,11 +569,11 @@ def get_partial_print_url(invoice_name, selected_items):
 
 
 @frappe.whitelist(allow_guest=False)
-def show_partial_print(key):
+def show_partial_print(key: str):
 	html = frappe.cache().get_value(f"reprint_parts:{key}")
 
 	if not html:
-		frappe.throw("The print preview has expired. Please re-select items and try again.")
+		frappe.throw(_("The print preview has expired. Please re-select items and try again."))
 
 	full_page = f"""<!DOCTYPE html>
 <html>
