@@ -4,11 +4,10 @@
 
 ## Architecture Overview
 
-The app extends the Point of Sale page through three layers:
+The app extends the Point of Sale page through two layers:
 
-1. **Python hooks** (`hooks.py`) — registers whitelisted API overrides and DocType JS mappings.
-2. **Python overrides** (`overrides/point_of_sale.py`) — customizes `get_parent_item_group` to use POS Profile item groups instead of the upstream arbitrary selection.
-3. **JavaScript extension** (`public/js/pos_extension.js`) — injects buttons (Add Expense, Reprint Invoices, Refund, New Invoice, Close POS) and modals into the POS page controller.
+1. **Python hooks** (`hooks.py`) — registers DocType JS mappings.
+2. **JavaScript extension** (`public/js/pos_extension.js`) — injects buttons (Add Expense, Reprint Invoices, Refund, New Invoice, Close POS) and modals into the POS page controller.
 
 The JS extension monkey-patches `frappe.require` to replace the `PointOfSale.Controller` class at runtime, adding the new UI behavior while preserving the original `on_page_load`.
 
@@ -16,7 +15,6 @@ The JS extension monkey-patches `frappe.require` to replace the `PointOfSale.Con
 
 | Hook | Target | Replacement |
 |---|---|---|
-| `override_whitelisted_methods` | `erpnext.selling.page.point_of_sale.point_of_sale.get_parent_item_group` | `pos_expenses.overrides.point_of_sale.get_parent_item_group` |
 | `doctype_js` | `"POS Closing Entry"` | `"public/js/pos_closing_entry.js"` |
 | `page_js` | `"point-of-sale"` | `"public/js/pos_extension.js"` |
 
@@ -169,7 +167,6 @@ The extension also injects the **POS Closing Entry** behavior: on-submit of the 
 |---|---|
 | `pos_expenses/hooks.py` | App configuration; hook overrides; DocType/page JS mappings |
 | `pos_expenses/api.py` | 10 whitelisted API methods with full signatures |
-| `pos_expenses/overrides/point_of_sale.py` | Override of `get_parent_item_group` |
 | `pos_expenses/pos_expenses/doctype/pos_expense_account/pos_expense_account.json` | DocType definition (fields, permissions, title) |
 | `pos_expenses/pos_expenses/doctype/pos_expense_account/pos_expense_account.py` | DocType validate — unique mapping enforcement |
 | `pos_expenses/pos_expenses/doctype/pos_expense_account/pos_expense_account.js` | onlink: account query hook pointing to `indirect_expense_account_query` |
