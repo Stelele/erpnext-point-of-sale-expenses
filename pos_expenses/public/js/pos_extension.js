@@ -405,7 +405,7 @@ frappe.provide("erpnext.PointOfSale");
 								'<span class="indicator-pill ' +
 								status_color +
 								'" style="font-size: 10px; margin-top: 2px;">' +
-								__(invoice.status) +
+								frappe.utils.escape_html(__(invoice.status)) +
 								"</span>" +
 								"</div>" +
 								"</div>"
@@ -464,7 +464,7 @@ frappe.provide("erpnext.PointOfSale");
 								'<span class="indicator-pill ' +
 								status_color +
 								'" style="font-size: 10px; margin-top: 2px;">' +
-								__(data.status) +
+								frappe.utils.escape_html(__(data.status)) +
 								"</span>" +
 								"</div>" +
 								"</div>";
@@ -495,7 +495,7 @@ frappe.provide("erpnext.PointOfSale");
 										"</div>" +
 										'<div style="text-align: right; flex-shrink: 0;">' +
 										"<div>" +
-										item.qty +
+										frappe.utils.escape_html(item.qty) +
 										" " +
 										frappe.utils.escape_html(item.uom) +
 										"</div>" +
@@ -569,7 +569,7 @@ frappe.provide("erpnext.PointOfSale");
 									payments_html +=
 										'<div style="display: flex; justify-content: space-between; font-size: 13px;">' +
 										"<div>" +
-										__(p.mode_of_payment) +
+										frappe.utils.escape_html(__(p.mode_of_payment)) +
 										"</div>" +
 										"<div>" +
 										format_currency(p.amount, data.currency) +
@@ -949,7 +949,7 @@ frappe.provide("erpnext.PointOfSale");
 								'<span class="indicator-pill ' +
 								status_color +
 								'" style="font-size: 10px; margin-top: 2px;">' +
-								__(invoice.status) +
+								frappe.utils.escape_html(__(invoice.status)) +
 								"</span>" +
 								"</div>" +
 								"</div>"
@@ -1008,7 +1008,7 @@ frappe.provide("erpnext.PointOfSale");
 								'<span class="indicator-pill ' +
 								status_color +
 								'" style="font-size: 10px; margin-top: 2px;">' +
-								__(data.status) +
+								frappe.utils.escape_html(__(data.status)) +
 								"</span>" +
 								"</div>" +
 								"</div>";
@@ -1039,7 +1039,7 @@ frappe.provide("erpnext.PointOfSale");
 										frappe.utils.escape_html(item.item_name) +
 										"</div>" +
 										'<div style="font-size: 11px; color: var(--text-muted);">' +
-										item.item_code +
+										frappe.utils.escape_html(item.item_code) +
 										"</div>" +
 										"</div>" +
 										'<div style="text-align: right; flex-shrink: 0; margin-left: 8px;">' +
@@ -1063,7 +1063,7 @@ frappe.provide("erpnext.PointOfSale");
 										'<div style="font-size: 11px; color: var(--text-muted);">' +
 										__("Orig") +
 										": " +
-										item.qty +
+										frappe.utils.escape_html(item.qty) +
 										"</div>" +
 										'<div style="font-weight: 500; font-size: 13px;">' +
 										format_currency(item.amount, data.currency) +
@@ -1107,7 +1107,7 @@ frappe.provide("erpnext.PointOfSale");
 									payments_html +=
 										'<div style="display: flex; justify-content: space-between; font-size: 13px;">' +
 										"<div>" +
-										__(p.mode_of_payment) +
+										frappe.utils.escape_html(__(p.mode_of_payment)) +
 										"</div>" +
 										"<div>" +
 										format_currency(p.amount, data.currency) +
