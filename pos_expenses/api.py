@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 
@@ -20,11 +21,14 @@ def post_expense(
 ):
 	frappe.has_permission("Journal Entry", "create", throw=True)
 
-	real_account = frappe.db.get_value("POS Expense Account", expense_account, "account")
+	real_account, company = frappe.db.get_value(
+		"POS Expense Account", expense_account, ["account", "company"]
+	) or (None, None)
 	if not real_account:
 		frappe.throw(_("POS Expense Account '{0}' not found.").format(frappe.bold(expense_account)))
 
-	company = frappe.defaults.get_user_default("Company")
+	# Post against the mapping's own company — the expense belongs to the
+	# mapping record, not to the operator's default company.
 	payment_account = frappe.db.get_value("Account", {"account_type": "Cash", "company": company})
 	if not payment_account:
 		frappe.throw(_("Could not find a default Cash account for this company."))
@@ -34,9 +38,9 @@ def post_expense(
 
 	if expense_currency != payment_currency:
 		frappe.throw(
-			f"Expense account '{real_account}' is in {expense_currency} "
-			f"but the Cash account is in {payment_currency}. "
-			"Please use accounts in the same currency."
+			_(
+				"Expense account {0} is in {1} but the Cash account is in {2}. Please use accounts in the same currency."
+			).format(frappe.bold(real_account), expense_currency, payment_currency)
 		)
 
 	je = frappe.new_doc("Journal Entry")
@@ -550,8 +554,6 @@ def process_pos_refund(invoice_name: str, return_items: str):
 
 @frappe.whitelist()
 def get_partial_print_url(invoice_name: str, selected_items: str):
-	import hashlib
-
 	try:
 		selected_items = json.loads(selected_items)
 	except (TypeError, ValueError):
