@@ -21,6 +21,9 @@ def post_expense(
 ):
 	frappe.has_permission("Journal Entry", "create", throw=True)
 
+	if amount <= 0:
+		frappe.throw(_("Expense amount must be greater than zero."))
+
 	real_account, company = frappe.db.get_value(
 		"POS Expense Account", expense_account, ["account", "company"]
 	) or (None, None)
@@ -518,8 +521,9 @@ def process_pos_refund(invoice_name: str, return_items: str):
 		for item in target_doc.items:
 			source_item_name = getattr(item, "pos_invoice_item", None) or item.name
 			if source_item_name in requested:
+				# qty drives the recalculation; item.amount is rebuilt by
+				# calculate_taxes_and_totals() with discounts applied
 				item.qty = -abs(requested[source_item_name])
-				item.amount = item.rate * item.qty if item.rate else 0
 				items_to_keep.append(item)
 
 		if not items_to_keep:
