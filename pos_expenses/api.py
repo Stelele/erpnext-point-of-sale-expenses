@@ -259,6 +259,7 @@ def get_pos_invoices_for_reprint(
 @frappe.whitelist()
 def get_invoice_detail_for_reprint(invoice_name: str):
 	doc = frappe.get_doc("POS Invoice", invoice_name)
+	frappe.has_permission("POS Invoice", "read", doc, throw=True)
 
 	items = []
 	for item in doc.items:
@@ -383,6 +384,7 @@ def get_pos_invoices_for_refund(
 @frappe.whitelist()
 def get_invoice_detail_for_refund(invoice_name: str):
 	doc = frappe.get_doc("POS Invoice", invoice_name)
+	frappe.has_permission("POS Invoice", "read", doc, throw=True)
 
 	items = []
 	for item in doc.items:
@@ -473,6 +475,8 @@ def process_pos_refund(invoice_name: str, return_items: str):
 	source_items_by_name = {item.name: item for item in source_doc.items}
 	requested = {}
 	for ri in return_items:
+		if not isinstance(ri, dict):
+			frappe.throw(_("Each return item must be an object with item_name and qty."))
 		item_name = ri.get("item_name")
 		qty = flt(ri.get("qty", 0))
 		if not item_name:
@@ -598,7 +602,7 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 	# let another user read someone else's cached receipt. Sort the items
 	# first so equivalent selections hash to one entry.
 	selected_items = sorted(selected_items)
-	key = hashlib.md5((invoice_name + str(selected_items) + frappe.session.user).encode()).hexdigest()
+	key = hashlib.sha256((invoice_name + str(selected_items) + frappe.session.user).encode()).hexdigest()
 	frappe.cache().set_value(
 		f"reprint_parts:{key}",
 		{"user": frappe.session.user, "html": html},
