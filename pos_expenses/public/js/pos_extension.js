@@ -98,11 +98,11 @@ frappe.provide("erpnext.PointOfSale");
 											remarks: values.remarks,
 										},
 										freeze: true,
-										freeze_message: "Posting Journal Entry...",
+										freeze_message: __("Posting Journal Entry..."),
 										callback: function (r) {
 											if (!r.exc) {
 												frappe.show_alert({
-													message: "Expense successfully posted!",
+													message: __("Expense successfully posted!"),
 													indicator: "green",
 												});
 												d.hide();
@@ -622,7 +622,9 @@ frappe.provide("erpnext.PointOfSale");
 							frappe.utils.print(
 								"POS Invoice",
 								data.name,
-								this.frm?.pos_print_format || "Standard",
+								this.pos_profile?.print_format ||
+									this.frm?.pos_print_format ||
+									"Standard",
 								data.letter_head,
 								data.language || frappe.boot.lang
 							);
