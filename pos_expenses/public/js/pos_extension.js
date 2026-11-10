@@ -48,7 +48,7 @@ frappe.provide("erpnext.PointOfSale");
 							const pos_profile = this.pos_profile;
 							const company = this.company;
 							var d = new frappe.ui.Dialog({
-								title: "Add Expense",
+								title: __("Add Expense"),
 								fields: [
 									{
 										label: "Date",
@@ -87,7 +87,7 @@ frappe.provide("erpnext.PointOfSale");
 										reqd: 1,
 									},
 								],
-								primary_action_label: "Submit Expense",
+								primary_action_label: __("Submit Expense"),
 								primary_action: function (values) {
 									frappe.call({
 										method: "pos_expenses.api.post_expense",

@@ -71,7 +71,7 @@
 |---|---|
 | **I don't see the Add Expense button** | Ensure a POS Expense Account is enabled and (if using a POS Profile) that the current session matches that profile. |
 | **The account I need isn't in the dropdown** | Check that the POS Expense Account record is **Enabled** and that the Account is linked to the correct Company. |
-| **I get "Could not find a default Cash account"** | Set up an Account with `account_type: Cash` under the user's **default company** — `post_expense` uses `frappe.defaults.get_user_default("Company")`, not the POS session's company. |
+| **I get "Could not find a default Cash account"** | Set up an Account with `account_type: Cash` under the **company of the POS Expense Account mapping you selected** — `post_expense` posts against the mapping record's own company. |
 | **No invoices appear in Reprint/Refund** | Invoices must be **submitted** (docstatus = 1). Draft or cancelled invoices are not shown. |
 | **Return quantity is less than expected** | The max returnable quantity = original qty minus any already-returned qty for that invoice. |
 | **After submitting POS Closing Entry, I'm not back at POS** | This is by design — the form routes to the Point-of-Sale page after submit. |
