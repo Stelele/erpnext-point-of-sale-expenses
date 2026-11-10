@@ -526,7 +526,7 @@ frappe.provide("erpnext.PointOfSale");
 									"<div>" +
 									__("Discount") +
 									" (" +
-									data.additional_discount_percentage +
+									frappe.utils.escape_html(data.additional_discount_percentage) +
 									"%)</div>" +
 									"<div>" +
 									format_currency(data.discount_amount, data.currency) +
@@ -1055,7 +1055,9 @@ frappe.provide("erpnext.PointOfSale");
 										' value="' +
 										item.returnable_qty +
 										'"' +
-										' min="1" max="' +
+										' min="' +
+										(can_return ? "1" : "0") +
+										' max="' +
 										item.returnable_qty +
 										'"' +
 										' style="width: 60px; text-align: center;"' +
