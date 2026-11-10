@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 from frappe.model.document import Document
 
 
@@ -13,13 +14,12 @@ class POSExpenseAccount(Document):
 			"pos_profile": self.pos_profile or ["is", "not set"],
 			"name": ["!=", self.name],
 		}
-		if self.pos_profile:
-			filters["pos_profile"] = self.pos_profile
 
 		existing = frappe.db.exists("POS Expense Account", filters)
 		if existing:
-			profile_label = self.pos_profile or "system-wide default"
+			profile_label = self.pos_profile or _("system-wide default")
 			frappe.throw(
-				f"A mapping for account '{self.account}' in company '{self.company}' "
-				f"already exists for {profile_label}."
+				_("A mapping for account {0} in company {1} already exists for {2}.").format(
+					frappe.bold(self.account), frappe.bold(self.company), frappe.bold(profile_label)
+				)
 			)

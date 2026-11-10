@@ -437,13 +437,19 @@ def get_invoice_detail_for_refund(invoice_name: str):
 
 @frappe.whitelist()
 def process_pos_refund(invoice_name: str, return_items: str):
-	return_items = json.loads(return_items)
+	try:
+		return_items = json.loads(return_items)
+	except (TypeError, ValueError):
+		return_items = None
 
 	if not return_items or not isinstance(return_items, list):
 		frappe.throw(_("No items selected for return."))
 
 	source_doc = frappe.get_doc("POS Invoice", invoice_name)
-	frappe.has_permission("POS Invoice", "create", source_doc, throw=True)
+	# Refund creates a return invoice: the caller must hold POS Invoice
+	# create rights. Checked without a doc — the source doc is submitted
+	# and belongs to whoever checked out; the new document is what matters.
+	frappe.has_permission("POS Invoice", "create", throw=True)
 
 	if source_doc.docstatus != 1:
 		frappe.throw(_("Only submitted invoices can be returned."))
@@ -451,8 +457,11 @@ def process_pos_refund(invoice_name: str, return_items: str):
 	if source_doc.is_return:
 		frappe.throw(_("Cannot return a return invoice."))
 
-	# Validate all items exist and quantities are within returnable limits
+	# Validate all items exist and quantities are within returnable limits.
+	# Aggregate duplicate rows first: submitting the same item row twice
+	# must be treated as one combined request, not two independent ones.
 	source_items_by_name = {item.name: item for item in source_doc.items}
+	requested = {}
 	for ri in return_items:
 		item_name = ri.get("item_name")
 		qty = flt(ri.get("qty", 0))
@@ -462,6 +471,9 @@ def process_pos_refund(invoice_name: str, return_items: str):
 			frappe.throw(_("Return quantity must be greater than zero for item {0}.").format(item_name))
 		if item_name not in source_items_by_name:
 			frappe.throw(_("Item {0} not found in invoice {1}.").format(item_name, invoice_name))
+		requested[item_name] = requested.get(item_name, 0) + qty
+
+	for item_name, qty in requested.items():
 		source_item = source_items_by_name[item_name]
 		item_qty = abs(source_item.qty) if source_item.qty else 0
 		returned = get_invoice_item_returned_qty("POS Invoice", invoice_name, source_doc.customer, item_name)
@@ -476,12 +488,9 @@ def process_pos_refund(invoice_name: str, return_items: str):
 
 	# Get all source item names for comparison
 	all_source_item_names = [item.name for item in source_doc.items]
-	return_item_names = [ri["item_name"] for ri in return_items]
-	is_partial = len(return_item_names) < len(all_source_item_names) or any(
-		not math.isclose(
-			flt(ri.get("qty")), abs(flt(source_items_by_name[ri["item_name"]].qty)), rel_tol=1e-5
-		)
-		for ri in return_items
+	is_partial = len(requested) < len(all_source_item_names) or any(
+		not math.isclose(qty, abs(flt(source_items_by_name[item_name].qty)), rel_tol=1e-5)
+		for item_name, qty in requested.items()
 	)
 
 	# Create the return document via ERPNext's standard mechanism
@@ -494,9 +503,8 @@ def process_pos_refund(invoice_name: str, return_items: str):
 		items_to_keep = []
 		for item in target_doc.items:
 			source_item_name = getattr(item, "pos_invoice_item", None) or item.name
-			match = next((ri for ri in return_items if ri["item_name"] == source_item_name), None)
-			if match:
-				item.qty = -abs(match["qty"])
+			if source_item_name in requested:
+				item.qty = -abs(requested[source_item_name])
 				item.amount = item.rate * item.qty if item.rate else 0
 				items_to_keep.append(item)
 
@@ -538,11 +546,20 @@ def process_pos_refund(invoice_name: str, return_items: str):
 def get_partial_print_url(invoice_name: str, selected_items: str):
 	import hashlib
 
-	selected_items = json.loads(selected_items)
+	try:
+		selected_items = json.loads(selected_items)
+	except (TypeError, ValueError):
+		selected_items = None
+	if not isinstance(selected_items, list) or not selected_items:
+		frappe.throw(_("At least one item must be selected."))
 
 	doc = frappe.get_doc("POS Invoice", invoice_name)
 	frappe.has_permission("POS Invoice", "read", doc, throw=True)
-	doc.items = [item for item in doc.items if item.name in selected_items]
+	matched_items = [item for item in doc.items if item.name in set(selected_items)]
+	if not matched_items:
+		frappe.throw(_("No matching items found in the invoice."))
+
+	doc.items = matched_items
 	doc.calculate_taxes_and_totals()
 
 	print_format = None
@@ -570,7 +587,9 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 
 	# Bind the cache entry to the requesting user: keys are predictable
 	# (md5 of invoice + selected rows), so possession of a key must not
-	# let another user read someone else's cached receipt.
+	# let another user read someone else's cached receipt. Sort the items
+	# first so equivalent selections hash to one entry.
+	selected_items = sorted(selected_items)
 	key = hashlib.md5((invoice_name + str(selected_items) + frappe.session.user).encode()).hexdigest()
 	frappe.cache().set_value(
 		f"reprint_parts:{key}",
@@ -584,10 +603,20 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 @frappe.whitelist(allow_guest=False)
 def show_partial_print(key: str):
 	cache = frappe.cache().get_value(f"reprint_parts:{key}")
-	html = (cache or {}).get("html")
+	# Entries written before the user-binding change stored the raw string;
+	# treat anything that is not the new dict as expired.
+	html = cache.get("html") if isinstance(cache, dict) else None
 
 	if not html or cache.get("user") != frappe.session.user:
 		frappe.throw(_("The print preview has expired. Please re-select items and try again."))
+
+	# The preview is served inline and auto-prints; keep it unscriptable
+	# and unframable — its HTML is built from print-format output.
+	frappe.local.response_headers.set(
+		"Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'"
+	)
+	frappe.local.response_headers.set("X-Frame-Options", "DENY")
+	frappe.local.response_headers.set("X-Content-Type-Options", "nosniff")
 
 	full_page = f"""<!DOCTYPE html>
 <html>
