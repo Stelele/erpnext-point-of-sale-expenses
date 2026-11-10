@@ -25,8 +25,8 @@
 	},
 	"root": true,
 	"globals": {
+		"erpnext": "readonly",
 		"frappe": true,
-		"erpnext": true,
 		"Vue": true,
 		"SetVueGlobals": true,
 		"__": true,

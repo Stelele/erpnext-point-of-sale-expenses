@@ -9,7 +9,10 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  # contents: write is required by resolve_outdated (GitHub gates the resolve
+  # mutation on repository write access, not on the pull-requests scope) and
+  # for posting review comments through checks/diffs that need it
+  contents: write
   pull-requests: write
 
 jobs:
@@ -52,3 +55,23 @@ jobs:
           language: English
           stream_progress: "true"
           sticky_summary: "true"
+          # --- noise-reduction + continuity (all documented inputs of the pinned
+          # action; every one is fail-closed) ---
+          # Incremental: never re-post an inline comment whose (path, line) range
+          # overlaps a bot comment already under the PR — this is what stopped
+          # re-flagging the same findings on every push.
+          incremental: "true"
+          # Checkpoint: record the reviewed head in the sticky summary and review
+          # only <checkpoint>..<new head> on the next push, instead of the whole
+          # merge-base diff again (full review happens if anything is in doubt).
+          checkpoint_range: "true"
+          # Auto-resolve the bot's own outdated inline threads (their lines no
+          # longer exist in the diff). Threads a human replied to, threads
+          # already resolved, and threads a live finding still covers are left
+          # alone. Needs contents: write above to work.
+          resolve_outdated: "true"
+          # Route the low/noise categories (style, docs) and low-severity
+          # findings to the sticky PR summary instead of inline comments, so
+          # inline comments stay focused on actionable findings.
+          route_severity_below: "low"
+          route_categories: "style,documentation,other"

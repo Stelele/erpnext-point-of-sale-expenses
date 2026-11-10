@@ -177,10 +177,14 @@ required_apps = ["erpnext"]
 # Extend DocType Class
 # ------------------------------
 #
-# Specify custom mixins to extend the standard doctype controller.
-# extend_doctype_class = {
-# 	"Task": "pos_expenses.custom.task.CustomTaskMixin"
-# }
+# The POS stock race guard runs on POS Invoice before_submit: it locks the
+# invoice's Bin rows and re-reads committed reservations, so two cashiers on
+# different POS profiles cannot sell past each other into a negative ledger
+# position that no forward stock entry can repair. It is a class hook (not a
+# doc_events handler) because the guard needs transaction control, which
+# Frappe disables inside doc_events handlers. Full rationale lives in
+# pos_expenses/stock_guard.py's module docstring.
+extend_doctype_class = {"POS Invoice": "pos_expenses.stock_guard.POSStockRaceGuardMixin"}
 
 # Overriding Methods
 # ------------------------------
