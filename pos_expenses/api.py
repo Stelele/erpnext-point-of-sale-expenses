@@ -18,7 +18,7 @@ def post_expense(
 	amount: float = 0,
 	remarks: str | None = None,
 ):
-	frappe.has_permission("Journal Entry", throw=True)
+	frappe.has_permission("Journal Entry", "create", throw=True)
 
 	real_account = frappe.db.get_value("POS Expense Account", expense_account, "account")
 	if not real_account:
@@ -193,6 +193,12 @@ def pos_expense_account_query(
 		)
 
 
+def _bounded_limit(limit: int, default: int = 50) -> int:
+	"""HTTP params arrive as strings; coerce and clamp to a sane range."""
+	value = cint(limit) or default
+	return max(1, min(value, 500))
+
+
 @frappe.whitelist()
 def get_pos_invoices_for_reprint(
 	date: str | None = None,
@@ -242,7 +248,7 @@ def get_pos_invoices_for_reprint(
 			"owner",
 		],
 		order_by="posting_date desc, posting_time desc",
-		limit=cint(limit),
+		limit=_bounded_limit(limit),
 	)
 
 
@@ -358,7 +364,7 @@ def get_pos_invoices_for_refund(
 			"owner",
 		],
 		order_by="posting_date desc, posting_time desc",
-		limit=cint(limit),
+		limit=_bounded_limit(limit),
 	)
 
 	# Filter to only returnable invoices (excludes already-returned, drafts, etc.)
