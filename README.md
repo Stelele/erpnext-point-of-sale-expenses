@@ -112,10 +112,14 @@ bench --site <site> install-app pos_expenses
 4. Follow the existing code style (tab-indented Python, semicolon-terminated JS)
 5. Run `bench --site <site> execute "pos_expenses.api.post_expense(posting_date='2026-01-01', expense_account='Gas - Main Store', amount=100, remarks='Test expense')"` to manually verify new API methods — replace the values (especially `expense_account`) with records from your site before running
 
-   Note: in the example above, `expense_account='Gas - Main Store'` is the **name of a POS Expense Account mapping record**, not a raw Account name — `api.py` resolves it to the mapped `account` and `company`, and the Journal Entry is posted against that company.
+   Note: in the example above, `expense_account='Gas - Main Store'` is the **name of a POS Expense Account mapping record**, not a raw Account name — `api.py` resolves it via `frappe.db.get_value("POS Expense Account", expense_account, "account")` (api.py line 15).
 
 ### License
 
 MIT (see license.txt).
 
 Held by Gift Mugweni (per `app_publisher` in `pos_expenses/hooks.py`); license.txt still carries an unfilled `Copyright (c) [year] [fullname]` placeholder.
+> **Stock race guard:** the point-of-sale checkout's stock availability is re-verified
+> with bin-row locks before submit — scenarios and details in
+> `pos_expenses/stock_guard.py` (full design rationale in its module docstring).
+
