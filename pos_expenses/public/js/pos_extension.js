@@ -400,7 +400,7 @@ frappe.provide("erpnext.PointOfSale");
 								format_currency(invoice.grand_total, invoice.currency) +
 								"</div>" +
 								'<div style="font-size: 11px; color: var(--text-muted);">' +
-								datetime +
+								frappe.utils.escape_html(datetime) +
 								"</div>" +
 								'<span class="indicator-pill ' +
 								status_color +
@@ -622,9 +622,7 @@ frappe.provide("erpnext.PointOfSale");
 							frappe.utils.print(
 								"POS Invoice",
 								data.name,
-								this.pos_profile?.print_format ||
-									this.frm?.pos_print_format ||
-									"Standard",
+								this.pos_profile?.print_format || "Standard",
 								data.letter_head,
 								data.language || frappe.boot.lang
 							);
@@ -946,7 +944,7 @@ frappe.provide("erpnext.PointOfSale");
 								format_currency(invoice.grand_total, invoice.currency) +
 								"</div>" +
 								'<div style="font-size: 11px; color: var(--text-muted);">' +
-								datetime +
+								frappe.utils.escape_html(datetime) +
 								"</div>" +
 								'<span class="indicator-pill ' +
 								status_color +
@@ -1053,12 +1051,12 @@ frappe.provide("erpnext.PointOfSale");
 										frappe.utils.escape_html(item.name) +
 										'"' +
 										' value="' +
-										item.returnable_qty +
+										frappe.utils.escape_html(item.returnable_qty) +
 										'"' +
 										' min="' +
 										(can_return ? "1" : "0") +
 										' max="' +
-										item.returnable_qty +
+										frappe.utils.escape_html(item.returnable_qty) +
 										'"' +
 										' style="width: 60px; text-align: center;"' +
 										(can_return ? "" : " disabled") +
@@ -1153,6 +1151,12 @@ frappe.provide("erpnext.PointOfSale");
 											return i.name === item_name;
 										});
 										if (orig_item) {
+											// Clamp to what is actually returnable so the
+											// estimate matches what the server accepts.
+											if (qty > orig_item.returnable_qty) {
+												qty = orig_item.returnable_qty;
+												$row.find(".refund-item-qty").val(qty);
+											}
 											var rate = orig_item.rate || 0;
 											total += rate * qty;
 										}
@@ -1266,6 +1270,18 @@ frappe.provide("erpnext.PointOfSale");
 										freeze: true,
 										freeze_message: __("Processing return..."),
 										callback: function (r) {
+											if (r.exc) {
+												frappe.show_alert(
+													{
+														message: __(
+															"Return failed. Please try again."
+														),
+														indicator: "red",
+													},
+													5
+												);
+												return;
+											}
 											if (r.message) {
 												frappe.show_alert(
 													{
