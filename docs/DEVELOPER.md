@@ -6,8 +6,10 @@
 
 The app extends the Point of Sale page through two layers:
 
+The app extends the Point of Sale page through two layers:
+
 1. **Python hooks** (`hooks.py`) — registers DocType JS mappings.
-2. **JavaScript extension** (`public/js/pos_extension.js`) — injects buttons (Add Expense, Reprint Invoices, Refund, New Invoice, Close POS) and modals into the POS page controller.
+2. **JavaScript extension** (`public/js/pos_extension.js`) — injects buttons (Add Expense, Reprint Invoices, New Invoice, Close POS) and modals into the POS page controller.
 
 The JS extension monkey-patches `frappe.require` to replace the `PointOfSale.Controller` class at runtime, adding the new UI behavior while preserving the original `on_page_load`.
 
@@ -25,13 +27,10 @@ All methods are decorated with `@frappe.whitelist()` and exposed as `@frappe.whi
 | Method | Signature (Python) | HTTP Method | Description |
 |---|---|---|---|
 | `post_expense` | `post_expense(posting_date=None, expense_account=None, amount=0, remarks=None)` | POST | Creates and submits a Journal Entry for the expense. Requires permission on "Journal Entry". Validates that the expense account currency matches the POS cash account currency. |
-| `indirect_expense_account_query` | `indirect_expense_account_query(doctype, txt, searchfield, start, page_len, filters)` | POST (search) | Returns leaf accounts under the "Indirect Expenses" group for a given company. Used as the set_query filter for the Account Link field on the POS Expense Account setup form (pos_expense_account.js lines 3-9). The cashier expense modal uses `pos_expense_account_query` instead (pos_extension.js lines 68-74). |
+| `indirect_expense_account_query` | `indirect_expense_account_query(doctype, txt, searchfield, start, page_len, filters)` | POST (search) | Returns leaf accounts under the "Indirect Expenses" group for a given company. Used as the set_query filter for the Account Link field on the POS Expense Account setup form (pos_expense_account.js lines 3-9). The cashier expense modal uses `pos_expense_account_query` instead (pos_extension.js lines 64-70). |
 | `pos_expense_account_query` | `pos_expense_account_query(doctype, txt, searchfield, start, page_len, filters)` | POST (search) | Returns POS Expense Accounts with profile-aware logic: profile-specific records override system-wide defaults (pos_profile IS NULL). Disabled records are excluded. |
 | `get_pos_invoices_for_reprint` | `get_pos_invoices_for_reprint(date=None, from_time=None, to_time=None, status=None, search_term=None, limit=50)` | POST (search) | Returns submitted POS Invoices for reprinting. Supports date, time range, status filter, and search by name or customer. |
 | `get_invoice_detail_for_reprint` | `get_invoice_detail_for_reprint(invoice_name)` | POST | Returns full invoice detail (customer, items, taxes, payments) for the reprint modal. |
-| `get_pos_invoices_for_refund` | `get_pos_invoices_for_refund(date=None, from_time=None, to_time=None, status=None, search_term=None, limit=50)` | POST (search) | Returns returnable POS Invoices (excludes already-returned, drafts). Uses `is_invoice_returnable` from erpnext. |
-| `get_invoice_detail_for_refund` | `get_invoice_detail_for_refund(invoice_name)` | POST | Returns invoice detail for refund modal, including returnable quantities per item. |
-| `process_pos_refund` | `process_pos_refund(invoice_name, return_items)` | POST | Processes a refund/return. Parses `return_items` JSON, validates quantities, and creates a return invoice via `make_return_doc`. Supports partial and full returns. |
 | `get_partial_print_url` | `get_partial_print_url(invoice_name, selected_items)` | POST | Generates a cached HTML print preview URL for selected invoice items. Key is MD5-hashed and expires in 600 seconds. |
 | `show_partial_print` | `show_partial_print(key)` | GET | Returns the cached HTML print preview as a downloadable page with `window.print()` on load. `allow_guest=False`. |
 
@@ -96,13 +95,9 @@ The extension replaces the POS controller class at runtime. Available methods on
 
 | Method | Description |
 |---|---|
-| `prepare_btns()` | Clears the native primary/secondary actions, menu, and inner toolbar, then adds custom buttons: Add Expense (lines 20-23), Reprint Invoices (24-27), Refund (28-31) in the inner toolbar, New Invoice (32-37, primary), Close POS (38-44, danger) — see pos_extension.js lines 14-45. |
-| `open_expense_modal()` | Opens a Dialog with fields: Date, Expense Account (Link to POS Expense Account), Amount (Currency), Remarks (Small Text, required — `reqd:1`, pos_extension.js line 87). Submits via `pos_expenses.api.post_expense`. |
+| `prepare_btns()` | Clears the native primary/secondary actions, menu, and inner toolbar, then adds custom buttons: Add Expense (lines 20-23), Reprint Invoices (24-27) in the inner toolbar, New Invoice (28-33, primary), Close POS (34-40, danger) — see pos_extension.js lines 14-41. |
+| `open_expense_modal()` | Opens a Dialog with fields: Date, Expense Account (Link to POS Expense Account), Amount (Currency), Remarks (Small Text, required — `reqd:1`, pos_extension.js line 83). Submits via `pos_expenses.api.post_expense`. |
 | `open_reprint_invoices_modal()` | Opens a Dialog with a filtered list of POS Invoices (via `get_pos_invoices_for_reprint`). Supports date/time/status/search filtering. Click an invoice to view details; print full or selected items. |
-| `open_refund_invoices_modal()` | Opens a Dialog with a filtered list of returnable POS Invoices. Supports date/time/status/search filtering. Select items and quantities; process return. |
-| `_execute_refund(invoice_name, return_items)` | Internal method: shows `frappe.confirm()`, then calls `pos_expenses.api.process_pos_refund`. |
-| `_process_refund_full(data)` | Returns all available items for the invoice. |
-| `_process_refund_selected(data)` | Returns only the selected items (with specified quantities). |
 | `_print_full_invoice(data)` | Calls `frappe.utils.print()` for the full invoice. |
 | `_print_selected_items(data)` | Calls `get_partial_print_url` then opens the URL in a new window. |
 
@@ -156,7 +151,6 @@ The extension also injects the **POS Closing Entry** behavior: on-submit of the 
 ### Testing Notes
 
 - **Expense flow**: The `post_expense` method creates and submits a Journal Entry with two account legs: the debit leg is the mapped Account resolved from the POS Expense Account record via `frappe.db.get_value("POS Expense Account", expense_account, "account")` (api.py line 15) — not the mapping record itself — and the credit leg is the company's Cash account. Currencies must match. The method requires the user to have "Journal Entry" permission.
-- **Refund flow**: `process_pos_refund` uses ERPNext's `make_return_doc` under the hood. It validates that quantities do not exceed returnable limits (original qty minus previously returned qty).
 - **Account query**: `pos_expense_account_query` uses a UNION ALL to profile-specific records (priority 1) then system-wide defaults (priority 2), excluding any system-wide accounts that are already covered by a profile-specific record.
 - **Invoice reprint**: `get_partial_print_url` caches HTML per key (MD5 of invoice_name + selected_items) for 600 seconds. The `show_partial_print` method returns a self-printing HTML page.
 - **Unique mapping**: The DocType `validate` method prevents duplicates within the same scope: a blank `pos_profile` collides only with another blank ("not set") mapping for the same company + account, while a profile-specific mapping coexists with a blank (system-wide) one as the intended override. There is no global (company, account) uniqueness. Test by trying to save two records with the same company/account and both blank `pos_profile` — the second should fail with a clear error.
@@ -166,7 +160,7 @@ The extension also injects the **POS Closing Entry** behavior: on-submit of the 
 | File | Purpose |
 |---|---|
 | `pos_expenses/hooks.py` | App configuration; hook overrides; DocType/page JS mappings |
-| `pos_expenses/api.py` | 10 whitelisted API methods with full signatures |
+| `pos_expenses/api.py` | 7 whitelisted API methods with full signatures |
 | `pos_expenses/pos_expenses/doctype/pos_expense_account/pos_expense_account.json` | DocType definition (fields, permissions, title) |
 | `pos_expenses/pos_expenses/doctype/pos_expense_account/pos_expense_account.py` | DocType validate — unique mapping enforcement |
 | `pos_expenses/pos_expenses/doctype/pos_expense_account/pos_expense_account.js` | onlink: account query hook pointing to `indirect_expense_account_query` |
