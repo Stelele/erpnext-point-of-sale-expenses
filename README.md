@@ -8,7 +8,6 @@ Easily log expenses without needing to leave the point of sale page. For fast ea
 - **POS Expense Account DocType** — configures which accounts are available per POS Profile and company
 - **Profile-aware account selection** — system-wide defaults overridden by profile-specific records
 - **Reprint Invoices** — select previously submitted invoices and reprint full or selected items
-- **Refund Invoices** — process returns with quantity selection, partial or full returns supported
 - **POS Closing Entry** — on-submit automatically returns to the POS page
 
 ### Screenshots
@@ -68,14 +67,6 @@ bench --site <site> install-app pos_expenses
 4. Check individual items to print, or click **Print Full Invoice**
 5. A new tab opens with the print-ready receipt
 
-**Refund Invoices**:
-1. On the POS page, click **Refund**
-2. Select a date range or search by customer name
-3. Click an invoice row to view returnable items
-4. Check items and enter quantities (max = returnable qty)
-5. Click **Return Everything** or **Return Selected Items**
-6. Confirm the return action — a return invoice is created successfully
-
 **POS Closing Entry**:
 - After closing the till, open the **POS Closing Entry** form
 - Click **Submit**
@@ -102,7 +93,6 @@ bench --site <site> install-app pos_expenses
 | "Could not find a default Cash account for this company" | Set up a Cash account in your company's chart of accounts |
 | Expense posted but Journal Entry not visible | Journal Entries are auto-submitted; check the Accounts module for the entry |
 | Reprint Invoices shows "No invoices found" | Ensure invoices have been submitted (docstatus = 1) and fall within the selected date range |
-| Refund button disabled for an invoice | Only submitted invoices with returnable items appear; check the invoice status and returnable quantities |
 
 ### Contributing
 
