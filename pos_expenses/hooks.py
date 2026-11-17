@@ -177,6 +177,8 @@ required_apps = ["erpnext"]
 # Extend DocType Class
 # ------------------------------
 #
+# Two mixins land in front of the ERPNext POS Invoice controller:
+#
 # The POS stock race guard runs on POS Invoice before_submit: it locks the
 # invoice's Bin rows and re-reads committed reservations, so two cashiers on
 # different POS profiles cannot sell past each other into a negative ledger
@@ -184,7 +186,17 @@ required_apps = ["erpnext"]
 # doc_events handler) because the guard needs transaction control, which
 # Frappe disables inside doc_events handlers. Full rationale lives in
 # pos_expenses/stock_guard.py's module docstring.
-extend_doctype_class = {"POS Invoice": "pos_expenses.stock_guard.POSStockRaceGuardMixin"}
+#
+# The zero-rate toast fix shadows check_zero_rate on POS Invoice: the core
+# check false-positives on every draft save because POS rows never get a
+# computed incoming_rate (frappe/erpnext#66738). Temporary — drop it once
+# upstream releases the fix; rationale in pos_expenses/zero_rate_toast.py.
+extend_doctype_class = {
+	"POS Invoice": [
+		"pos_expenses.stock_guard.POSStockRaceGuardMixin",
+		"pos_expenses.zero_rate_toast.POSZeroRateToastMixin",
+	]
+}
 
 # Overriding Methods
 # ------------------------------

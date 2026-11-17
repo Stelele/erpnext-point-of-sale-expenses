@@ -12,210 +12,13 @@ Runs on the erpnext `_Test` fixtures (`bench run-tests` scaffolds them); self-sk
 where they are missing.
 """
 
-import random
-import unittest
-from unittest.mock import patch
-
 import frappe
-from frappe.tests import IntegrationTestCase
-from frappe.utils import get_datetime
 
-COMPANY = "_Test Company"
-WAREHOUSE = "Stores - _TC"
-ROLES = ("Accounts Manager", "Accounts User", "Sales Manager", "Stock User", "Item Manager")
+from pos_expenses.tests.pos_session_fixtures import COMPANY, WAREHOUSE, POSSessionFixtureBed
 
 
-class POSRaceGuardTestBase(IntegrationTestCase):
-	"""Shared fixture bed for the race-guard tests (no tests of its own)."""
-
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
-		if not frappe.db.exists("Company", COMPANY):
-			raise unittest.SkipTest(
-				"requires the erpnext _Test company fixtures that bench run-tests sets up on the site"
-			)
-
-		cls.item_code = "ZGUARD-Race-" + str(random.randint(100000, 999999))
-		cls.customer = "ZGUARD Customer Race " + str(random.randint(100000, 999999))
-
-		currency = frappe.db.get_value("Company", COMPANY, "default_currency")
-		frappe.get_doc(
-			{
-				"doctype": "Customer",
-				"customer_name": cls.customer,
-				"customer_type": "Individual",
-				"customer_group": "Commercial",
-				"territory": "All Territories",
-				"default_currency": currency,
-			}
-		).insert(ignore_permissions=True)
-
-		frappe.get_doc(
-			{
-				"doctype": "Item",
-				"item_code": cls.item_code,
-				"item_name": cls.item_code,
-				"item_group": "All Item Groups",
-				"is_stock_item": 1,
-			}
-		).insert(ignore_permissions=True)
-		frappe.db.commit()
-		# the race tests commit POS invoices on a second connection; roll those back so
-		# the site is left as it was
-		cls.addClassCleanup(cls._cleanup_committed_docs)
-
-	@classmethod
-	def _cancel_delete(cls, doctype, filters):
-		for name in frappe.get_all(doctype, filters=filters, pluck="name"):
-			try:
-				doc = frappe.get_doc(doctype, name)
-				if doc.docstatus == 1:
-					doc.cancel()
-			except Exception:
-				frappe.db.rollback()
-			frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
-
-	@classmethod
-	def _cleanup_committed_docs(cls):
-		try:
-			frappe.init(cls.TEST_SITE)
-			if not frappe.local.db:
-				frappe.connect()
-			cls._cancel_delete("POS Invoice", {"customer": cls.customer})
-			cls._cancel_delete(
-				"Stock Entry",
-				{
-					"name": [
-						"in",
-						frappe.get_all(
-							"Stock Entry Detail", filters={"item_code": cls.item_code}, pluck="parent"
-						),
-					]
-				},
-			)
-			cls._cancel_delete("POS Opening Entry", {"pos_profile": ("like", "ZGUARD Profile%")})
-			for name in frappe.get_all(
-				"POS Profile", filters={"pos_profile_name": ("like", "ZGUARD Profile%")}, pluck="name"
-			):
-				frappe.delete_doc("POS Profile", name, ignore_permissions=True, force=True)
-			frappe.db.commit()
-		except Exception:
-			frappe.db.rollback()
-
-	def setUp(self):
-		super().setUp()
-		# cleanup order matters (addCleanup is LIFO): first roll back the test's
-		# uncommitted state, then strip whatever it committed (the racer leg commits
-		# on a separate connection, and the opening entry must be committed for the
-		# racer's own validation to pass)
-		self.addCleanup(self._cleanup_this_test)
-		self.addCleanup(frappe.db.rollback)
-
-		# a cashier can hold only one open POS session and a profile only one open
-		# opening entry, so each test owns a throwaway profile + cashier
-		from frappe.core.doctype.user_permission.test_user_permission import create_user
-
-		self.cashier = create_user(
-			f"pos_guard_cashier{random.randint(100000, 999999)}@example.com", *ROLES
-		).name
-		frappe.db.commit()
-		self.profile = self.create_profile()
-		frappe.db.commit()
-
-	def _cleanup_this_test(self):
-		"""Strip committed leftovers of one test (racer invoices, stock, session)."""
-		self._cancel_delete("POS Invoice", {"customer": self.customer})
-		self._cancel_delete(
-			"Stock Entry",
-			{
-				"name": (
-					"in",
-					frappe.get_all(
-						"Stock Entry Detail", filters={"item_code": self.item_code}, pluck="parent"
-					),
-				)
-			},
-		)
-		self._cancel_delete("POS Opening Entry", {"pos_profile": self.profile.name})
-		frappe.delete_doc("POS Profile", self.profile.name, ignore_permissions=True, force=True)
-		frappe.delete_doc("User", self.cashier, ignore_permissions=True, force=True)
-
-	def create_profile(self):
-		write_off = frappe.db.get_value(
-			"Account",
-			{"company": COMPANY, "is_group": 0, "root_type": "Expense", "disabled": 0},
-			"name",
-			order_by="creation",
-		)
-		if not write_off:
-			raise unittest.SkipTest("no expense account available for the POS profile write-off field")
-		profile_name = "ZGUARD Profile " + str(random.randint(100000, 999999))
-		return frappe.get_doc(
-			{
-				"doctype": "POS Profile",
-				"name": profile_name,
-				"pos_profile_name": profile_name,
-				"company": COMPANY,
-				"warehouse": WAREHOUSE,
-				"currency": frappe.db.get_value("Company", COMPANY, "default_currency"),
-				"selling_price_list": "Standard Selling",
-				"write_off_account": write_off,
-				"write_off_cost_center": frappe.db.get_value(
-					"Cost Center", {"company": COMPANY, "is_group": 0}, "name", order_by="creation"
-				),
-				"payments": [
-					{
-						"default": 1,
-						"mode_of_payment": "Cash",
-						"default_account": frappe.db.get_value(
-							"Account", {"account_type": "Cash", "company": COMPANY}, "name"
-						),
-					}
-				],
-			}
-		).insert(ignore_permissions=True)
-
-	def create_pi(self, qty=1, item_code=None, **overrides):
-		pi = frappe.new_doc("POS Invoice")
-		pi.is_pos = 1
-		pi.update_stock = 1
-		pi.pos_profile = self.profile.name
-		pi.company = COMPANY
-		pi.customer = overrides.pop("customer", self.customer)
-		pi.append(
-			"items",
-			{
-				"item_code": item_code or self.item_code,
-				"qty": qty,
-				"rate": 100,
-				"price_list_rate": 100,
-				"warehouse": WAREHOUSE,
-			},
-		)
-		pi.append(
-			"payments",
-			{"mode_of_payment": "Cash", "account": "Cash - _TC", "amount": 100 * qty},
-		)
-		pi.set_missing_values()
-		pi.save(ignore_permissions=True)
-		return pi
-
-	def stock_in(self, qty):
-		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
-
-		make_stock_entry(item_code=self.item_code, target=WAREHOUSE, qty=qty, basic_rate=100)
-
-	def open_pos(self):
-		poe = frappe.new_doc("POS Opening Entry")
-		poe.pos_profile = self.profile.name
-		poe.user = self.cashier
-		poe.company = COMPANY
-		poe.period_start_date = get_datetime()
-		poe.append("balance_details", {"mode_of_payment": "Cash"})
-		poe.save(ignore_permissions=True)
-		poe.submit()
-		return poe
+class POSRaceGuardTestBase(POSSessionFixtureBed):
+	"""Race-guard tests on the shared POS session fixture bed."""
 
 	def test_blocks_reservation_committed_between_validation_and_submission(self):
 		"""The guard must see a sibling reserve committed after this invoice validated."""
@@ -365,15 +168,17 @@ class POSRaceGuardTestBase(IntegrationTestCase):
 	def test_hook_is_registered_for_pos_submit(self):
 		from pos_expenses import hooks
 		from pos_expenses.stock_guard import POSStockRaceGuardMixin
+		from pos_expenses.zero_rate_toast import POSZeroRateToastMixin
 
-		mixin_path = (hooks.extend_doctype_class or {}).get("POS Invoice")
-		self.assertEqual(
-			mixin_path,
+		mixin_paths = (hooks.extend_doctype_class or {}).get("POS Invoice")
+		self.assertIn(
 			"pos_expenses.stock_guard.POSStockRaceGuardMixin",
+			mixin_paths,
 			"guard must be wired to POS Invoice via extend_doctype_class",
 		)
 		extended = frappe.new_doc("POS Invoice")
 		self.assertIn(POSStockRaceGuardMixin, type(extended).__mro__)
+		self.assertIn(POSZeroRateToastMixin, type(extended).__mro__)
 
 
 def make_return_pi(customer, pos_profile):
