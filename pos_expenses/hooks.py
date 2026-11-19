@@ -7,6 +7,14 @@ app_description = (
 app_email = "giftmugweni@gmail.com"
 app_license = "mit"
 
+# DB connection gate: bounded retry on MariaDB 1040 "Too many connections" so the
+# morning-open POS burst queues briefly instead of 500ing (rationale + removal
+# criteria in pos_expenses/db_gate.py). Import runs once per process when hooks
+# load; the class flag inside makes repeat imports a no-op.
+from pos_expenses.db_gate import install_db_gate
+
+install_db_gate()
+
 # Apps
 # ------------------
 
