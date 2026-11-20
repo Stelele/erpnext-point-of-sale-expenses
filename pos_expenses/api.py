@@ -338,10 +338,16 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 	print_format = None
 	letter_head = doc.letter_head
 	if doc.pos_profile:
-		profile = frappe.get_doc("POS Profile", doc.pos_profile)
-		print_format = profile.print_format
-		if not letter_head:
-			letter_head = profile.letter_head
+		# the profile may have been deleted after the invoice was posted — fall
+		# through to the format chain below instead of erroring on the reprint
+		try:
+			profile = frappe.get_doc("POS Profile", doc.pos_profile)
+		except frappe.exceptions.DoesNotExistError:
+			profile = None
+		if profile:
+			print_format = profile.print_format
+			if not letter_head:
+				letter_head = profile.letter_head
 
 	if not print_format and not frappe.db.get_value("Print Format", "POS Invoice", "disabled"):
 		print_format = "POS Invoice"

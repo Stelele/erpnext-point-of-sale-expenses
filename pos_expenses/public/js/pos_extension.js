@@ -615,11 +615,16 @@ frappe.provide("erpnext.PointOfSale");
 						}
 
 						_print_full_invoice(data) {
+							// `this.pos_profile` is the profile *name* string, not the
+							// doc — read the settings doc (fetched via
+							// get_pos_profile_data) for the print format, and fall
+							// back to the profile's letter head when the invoice
+							// carries none, mirroring get_partial_print_url.
 							frappe.utils.print(
 								"POS Invoice",
 								data.name,
-								this.pos_profile?.print_format || "Standard",
-								data.letter_head,
+								this.settings?.print_format || "POS Invoice",
+								data.letter_head || this.settings?.letter_head,
 								data.language || frappe.boot.lang
 							);
 						}
