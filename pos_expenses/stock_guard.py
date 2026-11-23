@@ -215,7 +215,11 @@ def _bin_lock_wait_window(item_codes):
 	frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", LOCK_WAIT_SECONDS)
 	try:
 		yield
-	except QueryTimeoutError:
+	except QueryTimeoutError as err:
+		# keep the underlying 1205 in the error log: the friendly throw the user
+		# sees does not carry the database error, and recurring contention is
+		# diagnosed from this trail
+		frappe.log_error(title="POS stock guard lock wait timed out", message=repr(err))
 		frappe.throw(
 			_("Items {0} are being sold at another till right now; please retry in a few seconds.").format(
 				frappe.bold(", ".join(sorted(item_codes)))
@@ -223,7 +227,17 @@ def _bin_lock_wait_window(item_codes):
 			title=_("Please Retry"),
 		)
 	finally:
-		frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", previous)
+		# never let a failed restore mask the original error: a dead connection
+		# (dropped during the lock wait) fails this SET SESSION, and the request
+		# is failing with the real cause already — swallow and log to the file
+		# logger, since a database-backed log write would raise on the same
+		# broken connection
+		try:
+			frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", previous)
+		except Exception:
+			frappe.logger("stock_guard").exception(
+				"could not restore innodb_lock_wait_timeout after the stock guard"
+			)
 
 
 def can_consume_stock(doc):
