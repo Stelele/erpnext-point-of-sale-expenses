@@ -25,7 +25,11 @@ and before the submit lands:
 3. the `Bin` rows for every (item, warehouse) the invoice consumes are locked
    FOR UPDATE and held until the submit commits — concurrent submits of the same
    item/warehouse serialize on those locks, and no competitor can commit its
-   reservation between the lock and the read that follows it;
+   reservation between the lock and the read that follows it. The wait for a
+   sibling's lock is bounded to a few seconds (see `_bin_lock_wait_window`):
+   while a waiter waits it holds its database connection, and an unbounded wait
+   under cashier retries exhausted a small plan's connection pool in
+   production (MariaDB 1040 "Too many connections");
 4. against the bins held under lock, committed availability is re-read (bin minus
    stock reservations minus quantities already reserved by other submitted-but-
    not-yet-consolidated POS invoices) and the invoice's own requirement is checked
@@ -40,11 +44,19 @@ the ERPNext controller in the document class's MRO — the same placement an
 """
 
 from collections import defaultdict
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
+from frappe.exceptions import QueryTimeoutError
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt
+
+# Seconds a submit may wait for another submit's bin-row lock before it is
+# rejected with a retry message. Small enough that waiters release their
+# database connections almost immediately, generous enough that momentary
+# overlaps between two checkouts resolve without user-visible errors.
+LOCK_WAIT_SECONDS = 5
 
 
 class POSStockRaceGuardMixin:
@@ -124,60 +136,94 @@ def enforce_stock_before_submit(doc):
 	# ledger) all happen after, so they roll back as one on failure as usual.
 	frappe.db.commit(chain=True)
 
-	# lock the bins for the whole submit; ordered so concurrent invoices always
-	# acquire them in the same sequence and cannot deadlock on each other — and so
-	# that no competitor can commit its reservation between our lock and our read
-	bins = _lock_bins(required)
-	committed_reserved = get_committed_pos_reserved_qty_map(
-		{item_code for item_code, _warehouse in required},
-		{warehouse for _item_code, warehouse in required},
-	)
+	with _bin_lock_wait_window(item_codes):
+		# lock the bins for the whole submit; ordered so concurrent invoices always
+		# acquire them in the same sequence and cannot deadlock on each other — and
+		# so that no competitor can commit its reservation between our lock and our
+		# read
+		bins = _lock_bins(required)
+		committed_reserved = get_committed_pos_reserved_qty_map(
+			{item_code for item_code, _warehouse in required},
+			{warehouse for _item_code, warehouse in required},
+		)
 
-	# iterate rows in document order; each row of a key spends from what is left of
-	# that bin's committed availability, matching how the ledger will see them.
-	# remaining[key] holds what is left for THIS invoice after the rows already
-	# accounted for, so a repeated key is not double-charged with the bin's
-	# reservations or other sessions' reservations.
-	remaining = {}
-	for row in doc.get("items"):
-		key = (row.item_code, row.warehouse)
-		if key not in required:
-			# rows the aggregation pass skipped (non-stock, bundles, negative-
-			# allowed items) consume nothing; their stock_qty must not block
-			continue
-		needed = stock_needed(row)
-		if needed <= 0:
-			continue
+		# iterate rows in document order; each row of a key spends from what is
+		# left of that bin's committed availability, matching how the ledger will
+		# see them. remaining[key] holds what is left for THIS invoice after the
+		# rows already accounted for, so a repeated key is not double-charged with
+		# the bin's reservations or other sessions' reservations.
+		remaining = {}
+		for row in doc.get("items"):
+			key = (row.item_code, row.warehouse)
+			if key not in required:
+				# rows the aggregation pass skipped (non-stock, bundles, negative-
+				# allowed items) consume nothing; their stock_qty must not block
+				continue
+			needed = stock_needed(row)
+			if needed <= 0:
+				continue
 
-		if key not in remaining:
-			bin_row = bins.get(key) or frappe._dict(actual_qty=0, reserved_stock=0)
-			remaining[key] = flt(
-				flt(flt(bin_row.get("actual_qty")) - flt(bin_row.get("reserved_stock")))
-				- flt(committed_reserved.get(key, 0)),
-				2,
-			)
+			if key not in remaining:
+				bin_row = bins.get(key) or frappe._dict(actual_qty=0, reserved_stock=0)
+				remaining[key] = flt(
+					flt(flt(bin_row.get("actual_qty")) - flt(bin_row.get("reserved_stock")))
+					- flt(committed_reserved.get(key, 0)),
+					2,
+				)
 
-		available = remaining[key]
-		if available <= 0:
-			frappe.throw(
-				_("Row #{0}: Item {1} has no stock in warehouse {2}.").format(
-					row.idx, frappe.bold(row.item_code), frappe.bold(row.warehouse)
-				),
-				title=_("Insufficient Stock"),
-			)
-		elif available < needed:
-			frappe.throw(
-				_("Row #{0}: Item {1} in warehouse {2}: Available {3}, Needed {4}.").format(
-					row.idx,
-					frappe.bold(row.item_code),
-					frappe.bold(row.warehouse),
-					frappe.bold(available),
-					frappe.bold(needed),
-				),
-				title=_("Insufficient Stock"),
-			)
+			available = remaining[key]
+			if available <= 0:
+				frappe.throw(
+					_("Row #{0}: Item {1} has no stock in warehouse {2}.").format(
+						row.idx, frappe.bold(row.item_code), frappe.bold(row.warehouse)
+					),
+					title=_("Insufficient Stock"),
+				)
+			elif available < needed:
+				frappe.throw(
+					_("Row #{0}: Item {1} in warehouse {2}: Available {3}, Needed {4}.").format(
+						row.idx,
+						frappe.bold(row.item_code),
+						frappe.bold(row.warehouse),
+						frappe.bold(available),
+						frappe.bold(needed),
+					),
+					title=_("Insufficient Stock"),
+				)
 
-		remaining[key] = available - needed
+			remaining[key] = available - needed
+
+
+@contextmanager
+def _bin_lock_wait_window(item_codes):
+	"""Bound how long this submit waits for a sibling's bin-row lock.
+
+	The guard holds the bin locks until the submit commits, so a sibling checkout
+	of the same (item, warehouse) waits on that row lock — and while it waits it
+	holds its database connection. MariaDB's default 50 s wait let a few cashier
+	retries stack enough held connections to exhaust a small plan's connection
+	allowance, and the whole site then failed with MariaDB 1040 "Too many
+	connections" (production, 2026-11-19).
+
+	This shrinks the session's `innodb_lock_wait_timeout` around the guard's
+	locking reads and restores the site default afterwards. Serialization is
+	unchanged — the first submit to reach the lock validates and commits, the
+	loser fails fast and releases its connection immediately — and the wait
+	timeout surfaces as a retryable message instead of a raw database error.
+	"""
+	previous = cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0])
+	frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", LOCK_WAIT_SECONDS)
+	try:
+		yield
+	except QueryTimeoutError:
+		frappe.throw(
+			_("Items {0} are being sold at another till right now; please retry in a few seconds.").format(
+				frappe.bold(", ".join(sorted(item_codes)))
+			),
+			title=_("Please Retry"),
+		)
+	finally:
+		frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", previous)
 
 
 def can_consume_stock(doc):

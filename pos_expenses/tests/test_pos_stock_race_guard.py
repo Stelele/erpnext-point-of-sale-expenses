@@ -13,6 +13,7 @@ where they are missing.
 """
 
 import frappe
+from frappe.utils import cint
 
 from pos_expenses.tests.pos_session_fixtures import COMPANY, WAREHOUSE, POSSessionFixtureBed
 
@@ -402,3 +403,69 @@ class TestPOSRaceGuardBusyDay(POSRaceGuardTestBase):
 
 		first.consolidated_invoice = "ZGUARD-FIXTURE-INVOICE"
 		enforce_stock_before_submit(parked)  # run through with the first parked
+
+
+class TestPOSRaceGuardLockWait(POSRaceGuardTestBase):
+	"""The guard's wait for a sibling's bin-row lock is bounded.
+
+	A waiter holds its database connection while it waits, so an unbounded wait
+	under cashier retries exhausted a small plan's connection pool in production
+	(MariaDB 1040 "Too many connections", 2026-11-19). These tests pin the
+	fast-fail: contention surfaces as a retryable message within seconds, and the
+	session's `innodb_lock_wait_timeout` is left exactly as the guard found it.
+	"""
+
+	def test_contended_bin_lock_fails_fast_with_retry_message(self):
+		"""A sibling holding the bin row lock must cause a quick, friendly reject."""
+		from unittest import mock
+
+		from pos_expenses import stock_guard
+		from pos_expenses.stock_guard import enforce_stock_before_submit
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(2)
+		frappe.db.commit()
+
+		# commit the draft first: the naming-series row is taken FOR UPDATE, so an
+		# uncommitted draft would block the lock holder's own work
+		pi = self.create_pi(qty=1)
+		frappe.db.commit()
+
+		previous_wait = cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0])
+
+		# the sibling: another cashier's submit holds the bin row on a second
+		# connection. Its rollback is deferred to test cleanup, so the lock stays
+		# held after this block returns, while this invoice submits on its own.
+		with self.secondary_connection():
+			frappe.db.sql(
+				"SELECT actual_qty FROM `tabBin` WHERE item_code = %(item)s AND warehouse = %(wh)s FOR UPDATE",
+				{"item": self.item_code, "wh": WAREHOUSE},
+			)
+		# frappe's secondary_connection leaves frappe.local.db on the secondary
+		# when it creates the connection (current_conn is captured after
+		# frappe.connect() swapped it — upstream quirk), so switch back to the
+		# primary explicitly; this invoice must submit on its own connection
+		frappe.local.db = self._primary_connection
+
+		try:
+			# shrink the guard's own constant so the test proves the bound, not
+			# the server default of 50 s
+			with mock.patch.object(stock_guard, "LOCK_WAIT_SECONDS", 1):
+				with self.assertRaises(frappe.ValidationError) as caught:
+					enforce_stock_before_submit(pi)
+			self.assertIn("please retry", str(caught.exception).lower())
+
+			# the guard restored the session's lock-wait setting: the rest of the
+			# submit and every later request on this connection wait normally
+			self.assertEqual(
+				cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0]),
+				previous_wait,
+			)
+		finally:
+			# release the sibling's lock (rolls back both connections)
+			self._rollback_connections()
+
+		# the lock holder is gone: the invoice locks, reads the pool and validates
+		frappe.db.commit()
+		enforce_stock_before_submit(pi)
