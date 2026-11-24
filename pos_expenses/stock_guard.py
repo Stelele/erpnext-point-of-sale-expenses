@@ -53,6 +53,8 @@ the ERPNext controller in the document class's MRO — the same placement an
 `override_doctype_class` gives without capping the position at a single app.
 """
 
+import math
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 
@@ -62,11 +64,18 @@ from frappe.exceptions import QueryTimeoutError
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
-# Seconds a submit may wait for another submit's bin-row lock before it is
-# rejected with a retry message. Small enough that waiters release their
-# database connections almost immediately, generous enough that momentary
-# overlaps between two checkouts resolve without user-visible errors.
-LOCK_WAIT_SECONDS = 5
+# Lock-wait budget, in seconds, for one whole POS submit. It is a single
+# deadline rather than a per-lock allowance: frappe's invoice-row lock and the
+# guard's bin-row locks share it, so a contended checkout gives up after about
+# this long instead of waiting once per lock. On a small Frappe Cloud plan every
+# waiter also holds one of very few web workers and burns request-time quota,
+# so the budget is short; momentary overlaps between two checkouts still
+# resolve inside it.
+LOCK_WAIT_SECONDS = 3
+
+
+class POSSubmitBusyError(frappe.ValidationError):
+	"""A POS submit gave up waiting for a lock; the POS screen retries after a cooldown."""
 
 
 class POSStockRaceGuardMixin:
@@ -82,6 +91,7 @@ class POSStockRaceGuardMixin:
 		wait for the whole submit makes every such waiter give up within seconds
 		with a retry message.
 		"""
+		self.flags.pos_lock_deadline = time.monotonic() + LOCK_WAIT_SECONDS
 		try:
 			with _session_lock_wait(LOCK_WAIT_SECONDS):
 				return super()._submit()
@@ -94,6 +104,7 @@ class POSStockRaceGuardMixin:
 					"{0} {1} is busy: another request is working on it or on records it needs. Please retry in a few seconds."
 				).format(_(self.doctype), frappe.bold(self.name)),
 				title=_("Please Retry"),
+				exc=POSSubmitBusyError,
 			)
 
 	def before_submit(self):
@@ -178,7 +189,7 @@ def enforce_stock_before_submit(doc, in_submit=False):
 	frappe.db.commit(chain=True)
 
 	stock_item_codes = sorted({item_code for item_code, _warehouse in required})
-	with _bin_lock_wait_window(stock_item_codes):
+	with _bin_lock_wait_window(stock_item_codes, _remaining_lock_wait(doc)):
 		# Fresh read view. The availability read below is a plain (consistent) read,
 		# and under REPEATABLE READ InnoDB pins the transaction's snapshot at its first
 		# consistent read. frappe.db.commit() runs after-commit callbacks once the
@@ -255,7 +266,7 @@ def enforce_stock_before_submit(doc, in_submit=False):
 
 
 @contextmanager
-def _bin_lock_wait_window(item_codes):
+def _bin_lock_wait_window(item_codes, seconds=None):
 	"""Bound how long this submit waits for a sibling's bin-row lock.
 
 	The guard holds the bin locks until the submit commits, so a sibling checkout
@@ -272,7 +283,7 @@ def _bin_lock_wait_window(item_codes):
 	timeout surfaces as a retryable message instead of a raw database error.
 	"""
 	try:
-		with _session_lock_wait(LOCK_WAIT_SECONDS):
+		with _session_lock_wait(seconds or LOCK_WAIT_SECONDS):
 			yield
 	except QueryTimeoutError as err:
 		# keep the underlying 1205 in the error log: the friendly throw the user
@@ -286,7 +297,21 @@ def _bin_lock_wait_window(item_codes):
 				frappe.bold(", ".join(sorted(item_codes)))
 			),
 			title=_("Please Retry"),
+			exc=POSSubmitBusyError,
 		)
+
+
+def _remaining_lock_wait(doc):
+	"""Seconds left of this submit's lock-wait budget (whole seconds, at least 1).
+
+	MariaDB's innodb_lock_wait_timeout is per statement and in whole seconds, so
+	the deadline is approximated by handing each later locking step what is left.
+	Outside a submit (direct calls) the full budget applies.
+	"""
+	deadline = doc.flags.get("pos_lock_deadline") if doc.flags else None
+	if not deadline:
+		return LOCK_WAIT_SECONDS
+	return max(1, math.ceil(deadline - time.monotonic()))
 
 
 @contextmanager
@@ -397,6 +422,7 @@ def _recheck_invoice_row(doc):
 				_(doc.doctype), frappe.bold(doc.name)
 			),
 			title=_("Please Retry"),
+			exc=POSSubmitBusyError,
 		)
 
 	current = rows[0] if rows else None
