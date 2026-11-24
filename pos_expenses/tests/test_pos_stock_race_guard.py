@@ -469,3 +469,181 @@ class TestPOSRaceGuardLockWait(POSRaceGuardTestBase):
 		# the lock holder is gone: the invoice locks, reads the pool and validates
 		frappe.db.commit()
 		enforce_stock_before_submit(pi)
+
+	def test_lock_wait_timeout_logs_survive_the_rollback(self):
+		"""The 1205 context is logged deferred, so the throw's rollback cannot drop it."""
+		from unittest import mock
+
+		from pos_expenses import stock_guard
+		from pos_expenses.stock_guard import enforce_stock_before_submit
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(2)
+		frappe.db.commit()
+		pi = self.create_pi(qty=1)
+		frappe.db.commit()
+
+		with self.secondary_connection():
+			frappe.db.sql(
+				"SELECT actual_qty FROM `tabBin` WHERE item_code = %(item)s AND warehouse = %(wh)s FOR UPDATE",
+				{"item": self.item_code, "wh": WAREHOUSE},
+			)
+		frappe.local.db = self._primary_connection
+
+		try:
+			with (
+				mock.patch.object(stock_guard, "LOCK_WAIT_SECONDS", 1),
+				mock.patch.object(stock_guard.frappe, "log_error") as log_error,
+			):
+				with self.assertRaises(frappe.ValidationError) as caught:
+					enforce_stock_before_submit(pi)
+		finally:
+			self._rollback_connections()
+
+		log_error.assert_called_once()
+		self.assertTrue(log_error.call_args.kwargs.get("defer_insert"))
+		# the retry message names the locked stock items
+		self.assertIn(self.item_code, str(caught.exception))
+
+	def test_waiter_sees_reservation_committed_while_it_waited(self):
+		"""Back-to-back sale of the last unit at two tills.
+
+		Till 1 submits and holds the bin lock until its request commits; till 2's
+		guard waits on that lock inside the bounded window. When till 1 commits,
+		till 2 must see its reservation and reject — even when an after-commit
+		callback read the database (pinning a snapshot) before the wait began.
+		"""
+		import threading
+
+		from pos_expenses.stock_guard import enforce_stock_before_submit
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(1)
+		frappe.db.commit()
+
+		pi = self.create_pi(qty=1)
+		frappe.db.commit()
+
+		site, sites_path = frappe.local.site, frappe.local.sites_path
+		holding = threading.Event()
+		release = threading.Event()
+		racer_error = []
+
+		def till_one():
+			frappe.init(site=site, sites_path=sites_path)
+			frappe.connect()
+			frappe.set_user("Administrator")
+			try:
+				racer = self.create_pi(qty=1)
+				frappe.db.commit()
+				racer.submit()  # the guard holds the bin lock from here until commit
+				holding.set()
+				release.wait(30)
+				frappe.db.commit()
+			except Exception as e:
+				racer_error.append(e)
+				holding.set()
+				frappe.db.rollback()
+			finally:
+				frappe.destroy()
+
+		thread = threading.Thread(target=till_one)
+		thread.start()
+		try:
+			self.assertTrue(holding.wait(60), "till 1 never reached its submit")
+			self.assertFalse(racer_error, racer_error)
+
+			# a database-reading after-commit callback: runs inside the guard's
+			# frappe.db.commit(), before the bin lock — the snapshot must not stick
+			frappe.db.after_commit.add(lambda: frappe.db.sql("SELECT COUNT(*) FROM `tabPOS Invoice`"))
+
+			# till 1 commits ~1 s into till 2's wait (well within the 5 s window)
+			threading.Timer(1, release.set).start()
+			with self.assertRaises(frappe.ValidationError) as caught:
+				enforce_stock_before_submit(pi)
+			self.assertIn("has no stock in warehouse", str(caught.exception))
+		finally:
+			release.set()
+			thread.join(60)
+
+	def test_duplicate_submit_of_same_invoice_is_rejected(self):
+		"""A second submit of one invoice must not slip through the released row lock."""
+		from pos_expenses.stock_guard import enforce_stock_before_submit
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(5)  # enough for both copies: only the row re-check stops it
+		frappe.db.commit()
+
+		pi = self.create_pi(qty=1)
+		frappe.db.commit()
+
+		# request A: loaded the draft (what check_if_latest saw) and is in flight
+		first = frappe.get_doc("POS Invoice", pi.name)
+		first._doc_before_save = frappe.get_doc("POS Invoice", pi.name)
+
+		# request B: the duplicate wins the race and commits its submit
+		with self.secondary_connection():
+			frappe.get_doc("POS Invoice", pi.name).submit()
+			frappe.db.commit()
+		frappe.local.db = self._primary_connection
+
+		with self.assertRaises(frappe.TimestampMismatchError):
+			enforce_stock_before_submit(first, in_submit=True)
+
+	def test_failed_insert_and_submit_gives_its_number_back(self):
+		"""Insert-and-submit in one request: a rolled-back submit leaves no numbering gap."""
+		from unittest import mock
+
+		from pos_expenses import stock_guard
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(2)
+		frappe.db.commit()
+
+		with self.secondary_connection():
+			frappe.db.sql(
+				"SELECT actual_qty FROM `tabBin` WHERE item_code = %(item)s AND warehouse = %(wh)s FOR UPDATE",
+				{"item": self.item_code, "wh": WAREHOUSE},
+			)
+		frappe.local.db = self._primary_connection
+
+		pi = frappe.new_doc("POS Invoice")
+		pi.update(
+			{
+				"is_pos": 1,
+				"update_stock": 1,
+				"pos_profile": self.profile.name,
+				"company": COMPANY,
+				"customer": self.customer,
+			}
+		)
+		pi.append(
+			"items",
+			{
+				"item_code": self.item_code,
+				"qty": 1,
+				"rate": 100,
+				"price_list_rate": 100,
+				"warehouse": WAREHOUSE,
+			},
+		)
+		pi.append("payments", {"mode_of_payment": "Cash", "account": "Cash - _TC", "amount": 100})
+		pi.set_missing_values()
+
+		try:
+			with mock.patch.object(stock_guard, "LOCK_WAIT_SECONDS", 1):
+				with self.assertRaises(frappe.ValidationError):
+					pi.submit()  # new doc: insert + submit in one go
+			burned = pi.name
+			frappe.db.rollback()  # what the request handler does; runs the revert
+		finally:
+			self._rollback_connections()
+
+		self.assertTrue(burned)
+		again = self.create_pi(qty=1)
+		frappe.db.commit()
+		self.assertEqual(again.name, burned)
