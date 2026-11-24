@@ -2,26 +2,39 @@ frappe.provide("erpnext.PointOfSale");
 
 (function () {
 	// After the server answers "Please Retry" (POSSubmitBusyError: another till
-	// holds a lock this sale needs), keep Complete Order disabled for a short
+	// holds a lock this sale needs), refuse re-submits of that invoice for a short
 	// cooldown. Instant re-clicks only queue behind the same lock while holding a
 	// web worker each and burning the site's request-time quota, which is what
 	// turns one slow sale into a slow site.
-	var RETRY_COOLDOWN_SECONDS = 5;
-	var pos_submit_state = { in_flight: false, not_before: 0 };
+	const RETRY_COOLDOWN_SECONDS = 5;
+	// a submit that never settles must not block the till for good
+	const MAX_IN_FLIGHT_SECONDS = 120;
+	const COOLDOWN_CLASS = "pos-submit-cooldown";
+	const pos_submit_state = {
+		in_flight_since: 0,
+		busy_invoice: null,
+		not_before: 0,
+		timer: null,
+	};
 
-	if (!frappe.request.error_handlers.__pos_busy_cooldown) {
-		frappe.request.error_handlers.__pos_busy_cooldown = true;
-		frappe.request.error_handlers.POSSubmitBusyError = (
-			frappe.request.error_handlers.POSSubmitBusyError || []
-		).concat(function () {
+	// visual cue only: Complete Order is a div (and Ctrl+Enter clicks it), so the
+	// real gate is submit_invoice_once. A class on <body> survives POS re-renders.
+	$("<style>")
+		.text(`body.${COOLDOWN_CLASS} .submit-order-btn { opacity: 0.5; cursor: not-allowed; }`)
+		.appendTo("head");
+
+	if (!frappe.request.__pos_busy_cooldown) {
+		frappe.request.__pos_busy_cooldown = true;
+		frappe.request.on_error("POSSubmitBusyError", () => {
+			const frm = window.cur_pos && window.cur_pos.frm;
+			pos_submit_state.busy_invoice = frm && frm.doc ? frm.doc.name : null;
 			pos_submit_state.not_before = Date.now() + RETRY_COOLDOWN_SECONDS * 1000;
-			var $btn = $(".point-of-sale-app .submit-order-btn");
-			// visual cue only: the button is a div (and Ctrl+Enter clicks it), so
-			// the real gate is _submit_invoice_once below
-			$btn.css({ opacity: 0.5, cursor: "not-allowed" });
-			setTimeout(function () {
-				$btn.css({ opacity: "", cursor: "" });
-			}, RETRY_COOLDOWN_SECONDS * 1000);
+			$("body").addClass(COOLDOWN_CLASS);
+			clearTimeout(pos_submit_state.timer);
+			pos_submit_state.timer = setTimeout(
+				() => $("body").removeClass(COOLDOWN_CLASS),
+				RETRY_COOLDOWN_SECONDS * 1000
+			);
 		});
 	}
 
@@ -32,29 +45,31 @@ frappe.provide("erpnext.PointOfSale");
 	// events.submit_invoice (Complete Order button, Ctrl+Enter, the invoice-fields
 	// dialog, and other apps such as pesepay).
 	function patch_payment_submit() {
-		var proto = erpnext.PointOfSale.Payment && erpnext.PointOfSale.Payment.prototype;
+		const proto = erpnext.PointOfSale.Payment && erpnext.PointOfSale.Payment.prototype;
 		if (!proto || proto.__pos_submit_guarded) return;
 		proto.__pos_submit_guarded = true;
-		var orig_init_component = proto.init_component;
+		const orig_init_component = proto.init_component;
 		proto.init_component = function () {
 			orig_init_component.apply(this, arguments);
-			var events = this.events;
-			events.submit_invoice = function () {
-				submit_invoice_once(events);
-			};
+			const events = this.events;
+			events.submit_invoice = () => submit_invoice_once(events);
 		};
 	}
 
 	function submit_invoice_once(events) {
-		var wait_ms = pos_submit_state.not_before - Date.now();
-		if (pos_submit_state.in_flight) {
+		const frm = events.get_frm();
+		const in_flight_ms = pos_submit_state.in_flight_since
+			? Date.now() - pos_submit_state.in_flight_since
+			: 0;
+		if (in_flight_ms && in_flight_ms < MAX_IN_FLIGHT_SECONDS * 1000) {
 			frappe.show_alert({
 				message: __("Still submitting this order, please wait."),
 				indicator: "orange",
 			});
 			return;
 		}
-		if (wait_ms > 0) {
+		const wait_ms = pos_submit_state.not_before - Date.now();
+		if (wait_ms > 0 && frm.doc && frm.doc.name === pos_submit_state.busy_invoice) {
 			frappe.show_alert({
 				message: __(
 					"Another till is finishing a sale of these items. Try again in {0} s.",
@@ -65,24 +80,27 @@ frappe.provide("erpnext.PointOfSale");
 			return;
 		}
 
-		var frm = events.get_frm();
-		var pos = window.cur_pos;
-		pos_submit_state.in_flight = true;
-		var done = function () {
-			pos_submit_state.in_flight = false;
+		pos_submit_state.in_flight_since = Date.now();
+		const done = () => {
+			pos_submit_state.in_flight_since = 0;
 		};
-		// on_error also fires when the cashier answers "No" to the confirm
-		// dialog, so the flag never sticks
-		frm.savesubmit(null, null, done).then(function (submitted) {
-			done();
-			// same success path as ERPNext's own submit_invoice
-			pos.toggle_components(false);
-			pos.toggle_submitted_invoice_summary(true);
-			frappe.show_alert({
-				indicator: "green",
-				message: __("POS invoice {0} created successfully", [submitted.doc.name]),
-			});
-		});
+		// on_error fires for a failed save and when the cashier answers "No" to,
+		// or closes, a confirm dialog; .catch covers savesubmit rejecting outright
+		// (e.g. validate_form_action throwing before the confirm)
+		frm.savesubmit(null, null, done)
+			.then((submitted) => {
+				done();
+				const pos = window.cur_pos;
+				if (!submitted || !submitted.doc || !pos) return;
+				// same success path as ERPNext's own submit_invoice
+				pos.toggle_components(false);
+				pos.toggle_submitted_invoice_summary(true);
+				frappe.show_alert({
+					indicator: "green",
+					message: __("POS invoice {0} created successfully", [submitted.doc.name]),
+				});
+			})
+			.catch(done);
 	}
 
 	var _orig_on_page_load = frappe.pages["point-of-sale"].on_page_load;
