@@ -253,6 +253,46 @@ def get_pos_invoices_for_reprint(
 	)
 
 
+def _usable_print_format(name):
+	"""`name` if it is an existing, enabled Print Format, else None."""
+	if not name:
+		return None
+	disabled = frappe.db.get_value("Print Format", name, "disabled")
+	if disabled is None:
+		# deleted or renamed: printing with it would fail outright
+		return None
+	return None if cint(disabled) else name
+
+
+def _resolve_print_settings(doc):
+	"""Print format and letter head for reprinting a POS Invoice.
+
+	Single source of truth for both reprint buttons ("Print Full Invoice" and
+	"Print Selected Items"), so one invoice always prints the same way. Settings
+	come from the invoice's *own* POS Profile — the reprint list spans every
+	profile, so the cashier's current till is the wrong source:
+
+	- print format: the profile's, then "POS Invoice", then "Standard", skipping
+	  any format that is disabled or no longer exists (printview refuses those);
+	- letter head: the invoice's, then the profile's.
+
+	A profile deleted after the invoice was posted falls through the chain.
+	"""
+	profile_format = profile_letter_head = None
+	if doc.pos_profile:
+		try:
+			profile = frappe.get_doc("POS Profile", doc.pos_profile)
+		except frappe.exceptions.DoesNotExistError:
+			profile = None
+		if profile:
+			profile_format = profile.print_format
+			profile_letter_head = profile.letter_head
+
+	print_format = _usable_print_format(profile_format) or _usable_print_format("POS Invoice") or "Standard"
+	letter_head = doc.letter_head or profile_letter_head or ""
+	return print_format, letter_head
+
+
 @frappe.whitelist()
 def get_invoice_detail_for_reprint(invoice_name: str):
 	doc = frappe.get_doc("POS Invoice", invoice_name)
@@ -283,6 +323,8 @@ def get_invoice_detail_for_reprint(invoice_name: str):
 			}
 		)
 
+	print_format, print_letter_head = _resolve_print_settings(doc)
+
 	payments = []
 	for payment in doc.get("payments", []):
 		payments.append(
@@ -309,6 +351,9 @@ def get_invoice_detail_for_reprint(invoice_name: str):
 		"additional_discount_percentage": doc.additional_discount_percentage,
 		"total_qty": doc.total_qty,
 		"letter_head": doc.letter_head,
+		# resolved print settings for "Print Full Invoice" (see _resolve_print_settings)
+		"print_format": print_format,
+		"print_letter_head": print_letter_head,
 		"language": doc.language,
 		"is_return": doc.is_return,
 		"items": items,
@@ -335,24 +380,7 @@ def get_partial_print_url(invoice_name: str, selected_items: str):
 	doc.items = matched_items
 	doc.calculate_taxes_and_totals()
 
-	print_format = None
-	letter_head = doc.letter_head
-	if doc.pos_profile:
-		# the profile may have been deleted after the invoice was posted — fall
-		# through to the format chain below instead of erroring on the reprint
-		try:
-			profile = frappe.get_doc("POS Profile", doc.pos_profile)
-		except frappe.exceptions.DoesNotExistError:
-			profile = None
-		if profile:
-			print_format = profile.print_format
-			if not letter_head:
-				letter_head = profile.letter_head
-
-	if not print_format and not frappe.db.get_value("Print Format", "POS Invoice", "disabled"):
-		print_format = "POS Invoice"
-	if not print_format:
-		print_format = "Standard"
+	print_format, letter_head = _resolve_print_settings(doc)
 
 	html = frappe.utils.print_utils.get_print(
 		doctype="POS Invoice",
