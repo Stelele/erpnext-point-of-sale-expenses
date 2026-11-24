@@ -12,6 +12,7 @@ frappe.provide("erpnext.PointOfSale");
 	const COOLDOWN_CLASS = "pos-submit-cooldown";
 	const pos_submit_state = {
 		in_flight_since: 0,
+		generation: 0,
 		busy_invoice: null,
 		not_before: 0,
 		timer: null,
@@ -69,7 +70,10 @@ frappe.provide("erpnext.PointOfSale");
 			return;
 		}
 		const wait_ms = pos_submit_state.not_before - Date.now();
-		if (wait_ms > 0 && frm.doc && frm.doc.name === pos_submit_state.busy_invoice) {
+		// unknown busy invoice (no POS controller when the error arrived): cool
+		// down every submit rather than none
+		const busy = pos_submit_state.busy_invoice;
+		if (wait_ms > 0 && (!busy || (frm.doc && frm.doc.name === busy))) {
 			frappe.show_alert({
 				message: __(
 					"Another till is finishing a sale of these items. Try again in {0} s.",
@@ -81,8 +85,11 @@ frappe.provide("erpnext.PointOfSale");
 		}
 
 		pos_submit_state.in_flight_since = Date.now();
+		const generation = ++pos_submit_state.generation;
+		// a submit given up on after MAX_IN_FLIGHT_SECONDS must not clear the flag
+		// of a newer one when it finally settles
 		const done = () => {
-			pos_submit_state.in_flight_since = 0;
+			if (generation === pos_submit_state.generation) pos_submit_state.in_flight_since = 0;
 		};
 		// on_error fires for a failed save and when the cashier answers "No" to,
 		// or closes, a confirm dialog; .catch covers savesubmit rejecting outright
@@ -90,11 +97,15 @@ frappe.provide("erpnext.PointOfSale");
 		frm.savesubmit(null, null, done)
 			.then((submitted) => {
 				done();
+				if (!submitted || !submitted.doc) return;
+				// same success path as ERPNext's own submit_invoice; the alert is
+				// shown even if the POS view cannot be updated, so the cashier
+				// knows the order went through
 				const pos = window.cur_pos;
-				if (!submitted || !submitted.doc || !pos) return;
-				// same success path as ERPNext's own submit_invoice
-				pos.toggle_components(false);
-				pos.toggle_submitted_invoice_summary(true);
+				if (pos) {
+					pos.toggle_components(false);
+					pos.toggle_submitted_invoice_summary(true);
+				}
 				frappe.show_alert({
 					indicator: "green",
 					message: __("POS invoice {0} created successfully", [submitted.doc.name]),
