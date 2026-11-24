@@ -1,6 +1,90 @@
 frappe.provide("erpnext.PointOfSale");
 
 (function () {
+	// After the server answers "Please Retry" (POSSubmitBusyError: another till
+	// holds a lock this sale needs), keep Complete Order disabled for a short
+	// cooldown. Instant re-clicks only queue behind the same lock while holding a
+	// web worker each and burning the site's request-time quota, which is what
+	// turns one slow sale into a slow site.
+	var RETRY_COOLDOWN_SECONDS = 5;
+	var pos_submit_state = { in_flight: false, not_before: 0 };
+
+	if (!frappe.request.error_handlers.__pos_busy_cooldown) {
+		frappe.request.error_handlers.__pos_busy_cooldown = true;
+		frappe.request.error_handlers.POSSubmitBusyError = (
+			frappe.request.error_handlers.POSSubmitBusyError || []
+		).concat(function () {
+			pos_submit_state.not_before = Date.now() + RETRY_COOLDOWN_SECONDS * 1000;
+			var $btn = $(".point-of-sale-app .submit-order-btn");
+			// visual cue only: the button is a div (and Ctrl+Enter clicks it), so
+			// the real gate is _submit_invoice_once below
+			$btn.css({ opacity: 0.5, cursor: "not-allowed" });
+			setTimeout(function () {
+				$btn.css({ opacity: "", cursor: "" });
+			}, RETRY_COOLDOWN_SECONDS * 1000);
+		});
+	}
+
+	// Guard the Payment component itself rather than the controller: other apps
+	// (e.g. awesome_restaurant3) rebuild the POS controller by copying their own
+	// methods onto the instance, which bypasses controller overrides, but every
+	// variant builds ERPNext's Payment component and submits through its
+	// events.submit_invoice (Complete Order button, Ctrl+Enter, the invoice-fields
+	// dialog, and other apps such as pesepay).
+	function patch_payment_submit() {
+		var proto = erpnext.PointOfSale.Payment && erpnext.PointOfSale.Payment.prototype;
+		if (!proto || proto.__pos_submit_guarded) return;
+		proto.__pos_submit_guarded = true;
+		var orig_init_component = proto.init_component;
+		proto.init_component = function () {
+			orig_init_component.apply(this, arguments);
+			var events = this.events;
+			events.submit_invoice = function () {
+				submit_invoice_once(events);
+			};
+		};
+	}
+
+	function submit_invoice_once(events) {
+		var wait_ms = pos_submit_state.not_before - Date.now();
+		if (pos_submit_state.in_flight) {
+			frappe.show_alert({
+				message: __("Still submitting this order, please wait."),
+				indicator: "orange",
+			});
+			return;
+		}
+		if (wait_ms > 0) {
+			frappe.show_alert({
+				message: __(
+					"Another till is finishing a sale of these items. Try again in {0} s.",
+					[Math.ceil(wait_ms / 1000)]
+				),
+				indicator: "orange",
+			});
+			return;
+		}
+
+		var frm = events.get_frm();
+		var pos = window.cur_pos;
+		pos_submit_state.in_flight = true;
+		var done = function () {
+			pos_submit_state.in_flight = false;
+		};
+		// on_error also fires when the cashier answers "No" to the confirm
+		// dialog, so the flag never sticks
+		frm.savesubmit(null, null, done).then(function (submitted) {
+			done();
+			// same success path as ERPNext's own submit_invoice
+			pos.toggle_components(false);
+			pos.toggle_submitted_invoice_summary(true);
+			frappe.show_alert({
+				indicator: "green",
+				message: __("POS invoice {0} created successfully", [submitted.doc.name]),
+			});
+		});
+	}
+
 	var _orig_on_page_load = frappe.pages["point-of-sale"].on_page_load;
 
 	frappe.pages["point-of-sale"].on_page_load = function (wrapper) {
@@ -9,6 +93,7 @@ frappe.provide("erpnext.PointOfSale");
 		frappe.require = function (items, callback) {
 			if (items === "point-of-sale.bundle.js") {
 				return _orig_require(items, function () {
+					patch_payment_submit();
 					var Orig = erpnext.PointOfSale.Controller;
 					erpnext.PointOfSale.Controller = class extends Orig {
 						prepare_btns() {

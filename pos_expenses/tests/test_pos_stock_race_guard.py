@@ -455,6 +455,7 @@ class TestPOSRaceGuardLockWait(POSRaceGuardTestBase):
 				with self.assertRaises(frappe.ValidationError) as caught:
 					enforce_stock_before_submit(pi)
 			self.assertIn("please retry", str(caught.exception).lower())
+			self.assertIsInstance(caught.exception, stock_guard.POSSubmitBusyError)
 
 			# the guard restored the session's lock-wait setting: the rest of the
 			# submit and every later request on this connection wait normally
@@ -683,6 +684,7 @@ class TestPOSRaceGuardLockWait(POSRaceGuardTestBase):
 			elapsed = time.monotonic() - started
 
 			self.assertIn("please retry", str(caught.exception).lower())
+			self.assertIsInstance(caught.exception, stock_guard.POSSubmitBusyError)
 			self.assertLess(elapsed, 10, "the submit must not wait the server default")
 			self.assertTrue(log_error.call_args.kwargs.get("defer_insert"))
 			self.assertEqual(
@@ -695,3 +697,53 @@ class TestPOSRaceGuardLockWait(POSRaceGuardTestBase):
 		frappe.db.commit()
 		frappe.get_doc("POS Invoice", pi.name).submit()
 		self.assertEqual(frappe.db.get_value("POS Invoice", pi.name, "docstatus"), 1)
+
+
+class TestPOSSubmitLockBudget(POSRaceGuardTestBase):
+	"""One lock-wait budget per submit: later locks get what is left, not a fresh wait."""
+
+	def test_remaining_budget(self):
+		import time
+		from unittest import mock
+
+		from pos_expenses import stock_guard
+
+		doc = frappe._dict(flags=frappe._dict())
+		with mock.patch.object(stock_guard, "LOCK_WAIT_SECONDS", 3):
+			# outside a submit (direct call): the whole budget
+			self.assertEqual(stock_guard._remaining_lock_wait(doc), 3)
+			# early in the submit: most of it, rounded up to whole seconds
+			doc.flags.pos_lock_deadline = time.monotonic() + 2.4
+			self.assertEqual(stock_guard._remaining_lock_wait(doc), 3)
+			# budget nearly spent (e.g. on frappe's invoice-row lock): at least 1 s
+			doc.flags.pos_lock_deadline = time.monotonic() + 0.2
+			self.assertEqual(stock_guard._remaining_lock_wait(doc), 1)
+			# budget overrun: still 1 s, never 0 (0 is not a valid lock wait)
+			doc.flags.pos_lock_deadline = time.monotonic() - 5
+			self.assertEqual(stock_guard._remaining_lock_wait(doc), 1)
+
+	def test_submit_sets_the_deadline(self):
+		from unittest import mock
+
+		from pos_expenses import stock_guard
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(2)
+		frappe.db.commit()
+		pi = self.create_pi(qty=1)
+		frappe.db.commit()
+
+		seen = {}
+		real = stock_guard._remaining_lock_wait
+
+		def spy(doc):
+			seen["deadline"] = doc.flags.get("pos_lock_deadline")
+			seen["seconds"] = real(doc)
+			return seen["seconds"]
+
+		with mock.patch.object(stock_guard, "_remaining_lock_wait", spy):
+			frappe.get_doc("POS Invoice", pi.name).submit()
+
+		self.assertTrue(seen.get("deadline"), "the guard must see the submit's deadline")
+		self.assertLessEqual(seen["seconds"], stock_guard.LOCK_WAIT_SECONDS)
