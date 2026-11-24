@@ -109,3 +109,84 @@ class ReprintPrintSettingsTest(unittest.TestCase):
 		kwargs = self.get_print.call_args.kwargs
 		self.assertEqual(kwargs["letterhead"], "Invoice LH")
 		self.assertEqual(kwargs["no_letterhead"], 0)
+
+
+class FakeDetailRow(FakeItemRow):
+	def __getattr__(self, name):
+		return None
+
+
+class FakeDetailInvoice(FakeInvoice):
+	"""The extra fields get_invoice_detail_for_reprint reads."""
+
+	doctype = "POS Invoice"
+
+	def __init__(self, pos_profile=None, letter_head=""):
+		super().__init__(pos_profile=pos_profile, letter_head=letter_head)
+		self.items = [FakeDetailRow("row-1"), FakeDetailRow("row-2")]
+		self.taxes = []
+
+	def get(self, key, default=None):
+		return default
+
+	def __getattr__(self, name):
+		# scalar header fields (customer, totals, dates…) are irrelevant here
+		return None
+
+
+class ReprintBothButtonsAgreeTest(ReprintPrintSettingsTest):
+	""" "Print Full Invoice" gets its settings from the server, resolved from the
+	invoice's own profile through the same chain as "Print Selected Items"."""
+
+	def detail(self, invoice, get_doc):
+		from pos_expenses.api import get_invoice_detail_for_reprint
+
+		with mock.patch("frappe.get_doc", get_doc):
+			return get_invoice_detail_for_reprint("ACC-PSINV-0001")
+
+	def test_full_and_selected_print_use_the_invoice_profile(self):
+		"""Both buttons resolve the same format and letter head from the invoice's profile."""
+		invoice = FakeDetailInvoice(pos_profile="Demo")
+		profile = FakeProfile(print_format="Voucher Receipt", letter_head="Company LH")
+		get_doc = mock.Mock(side_effect=lambda dt, name: invoice if dt == "POS Invoice" else profile)
+
+		data = self.detail(invoice, get_doc)
+		self.call(invoice, get_doc)
+		selected = self.get_print.call_args.kwargs
+
+		self.assertEqual(data["print_format"], "Voucher Receipt")
+		self.assertEqual(data["print_letter_head"], "Company LH")
+		self.assertEqual(data["print_format"], selected["print_format"])
+		self.assertEqual(data["print_letter_head"], selected["letterhead"])
+
+	def test_disabled_profile_format_falls_back_to_pos_invoice(self):
+		"""printview refuses a disabled format: skip it instead of erroring."""
+		invoice = FakeDetailInvoice(pos_profile="Demo")
+		profile = FakeProfile(print_format="Old Receipt")
+		get_doc = mock.Mock(side_effect=lambda dt, name: invoice if dt == "POS Invoice" else profile)
+		disabled = {"Old Receipt": 1, "POS Invoice": 0}
+
+		with mock.patch("frappe.db.get_value", mock.Mock(side_effect=lambda dt, name, f: disabled.get(name))):
+			data = self.detail(invoice, get_doc)
+		self.assertEqual(data["print_format"], "POS Invoice")
+
+	def test_deleted_profile_format_and_disabled_pos_invoice_fall_back_to_standard(self):
+		"""A deleted profile format and a disabled "POS Invoice" leave only Standard."""
+		invoice = FakeDetailInvoice(pos_profile="Demo")
+		profile = FakeProfile(print_format="Gone Receipt")
+		get_doc = mock.Mock(side_effect=lambda dt, name: invoice if dt == "POS Invoice" else profile)
+		disabled = {"POS Invoice": 1}  # "Gone Receipt" missing -> get_value returns None
+
+		with mock.patch("frappe.db.get_value", mock.Mock(side_effect=lambda dt, name, f: disabled.get(name))):
+			data = self.detail(invoice, get_doc)
+			self.call(invoice, get_doc)
+		self.assertEqual(data["print_format"], "Standard")
+		self.assertEqual(self.get_print.call_args.kwargs["print_format"], "Standard")
+
+	def test_no_letter_head_anywhere_prints_without_one(self):
+		invoice = FakeDetailInvoice(pos_profile="Demo", letter_head="")
+		profile = FakeProfile(print_format=None, letter_head=None)
+		get_doc = mock.Mock(side_effect=lambda dt, name: invoice if dt == "POS Invoice" else profile)
+
+		data = self.detail(invoice, get_doc)
+		self.assertEqual(data["print_letter_head"], "")
