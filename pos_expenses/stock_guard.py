@@ -43,6 +43,11 @@ and before the submit lands:
 A sibling that committed in the window between this invoice's validation and its
 submission is therefore rejected here instead of being sold twice.
 
+Beyond the guard's own locks, the mixin's `_submit` bounds every lock wait of the
+whole submit (frappe's check_if_latest row lock on the invoice, on_submit hooks of
+other apps), so no waiter of a POS submit can hold its connection for MariaDB's
+default 50 s.
+
 The mixin is wired through `extend_doctype_class` in hooks.py, landing in front of
 the ERPNext controller in the document class's MRO — the same placement an
 `override_doctype_class` gives without capping the position at a single app.
@@ -65,6 +70,32 @@ LOCK_WAIT_SECONDS = 5
 
 
 class POSStockRaceGuardMixin:
+	def _submit(self):
+		"""Bound every lock wait of the whole submit, not just the guard's own.
+
+		A retried checkout queues on locks before the guard ever runs: frappe's
+		check_if_latest takes the invoice row FOR UPDATE, so re-clicks of one
+		invoice wait behind each other, and on_submit hooks of other apps take
+		their own row locks (e.g. frappe_livestock's Livestock Batch). Each waiter
+		holds a database connection for MariaDB's default 50 s — the pileup behind
+		the 2026-11-19 "Too many connections" outage. Shrinking the session's lock
+		wait for the whole submit makes every such waiter give up within seconds
+		with a retry message.
+		"""
+		try:
+			with _session_lock_wait(LOCK_WAIT_SECONDS):
+				return super()._submit()
+		except QueryTimeoutError as err:
+			# deferred: the throw rolls the request back, and a log inserted in
+			# this transaction would be rolled back with it
+			frappe.log_error(title="POS submit lock wait timed out", message=repr(err), defer_insert=True)
+			frappe.throw(
+				_(
+					"{0} {1} is busy: another request is working on it or on records it needs. Please retry in a few seconds."
+				).format(_(self.doctype), frappe.bold(self.name)),
+				title=_("Please Retry"),
+			)
+
 	def before_submit(self):
 		# POSInvoice.before_submit runs via the MRO: this is not a doc_event, so the
 		# transaction is ours to control (frappe forces doc_events handlers off it).
@@ -240,10 +271,9 @@ def _bin_lock_wait_window(item_codes):
 	loser fails fast and releases its connection immediately — and the wait
 	timeout surfaces as a retryable message instead of a raw database error.
 	"""
-	previous = cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0])
-	frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", LOCK_WAIT_SECONDS)
 	try:
-		yield
+		with _session_lock_wait(LOCK_WAIT_SECONDS):
+			yield
 	except QueryTimeoutError as err:
 		# keep the underlying 1205 in the error log: the friendly throw the user
 		# sees does not carry the database error, and recurring contention is
@@ -257,6 +287,18 @@ def _bin_lock_wait_window(item_codes):
 			),
 			title=_("Please Retry"),
 		)
+
+
+@contextmanager
+def _session_lock_wait(seconds):
+	"""Set the session's innodb_lock_wait_timeout to `seconds`, restore it after.
+
+	Nests safely: an inner window restores the outer window's value.
+	"""
+	previous = cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0])
+	frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", seconds)
+	try:
+		yield
 	finally:
 		# never let a failed restore mask the original error: a dead connection
 		# (dropped during the lock wait) fails this SET SESSION, and the request
