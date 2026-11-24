@@ -21,7 +21,12 @@ and before the submit lands:
    transaction's read view is fresh. Nothing had been written by the submit at
    this point, so this loses no atomicity. This must happen inside the document's
    own method rather than a doc_event hook, because Frappe disables transaction
-   control inside doc_events handlers;
+   control inside doc_events handlers. A second, raw `COMMIT AND CHAIN` right
+   before the locks guarantees no after-commit callback pinned a stale snapshot;
+   the invoice's own row is re-locked and re-checked (the early commit released
+   the lock frappe's `check_if_latest` held against duplicate submits); and for
+   insert-and-submit requests the naming-series number is handed back if the
+   submit is rolled back;
 3. the `Bin` rows for every (item, warehouse) the invoice consumes are locked
    FOR UPDATE and held until the submit commits — concurrent submits of the same
    item/warehouse serialize on those locks, and no competitor can commit its
@@ -50,7 +55,7 @@ import frappe
 from frappe import _
 from frappe.exceptions import QueryTimeoutError
 from frappe.query_builder.functions import IfNull, Sum
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, get_datetime
 
 # Seconds a submit may wait for another submit's bin-row lock before it is
 # rejected with a retry message. Small enough that waiters release their
@@ -66,7 +71,7 @@ class POSStockRaceGuardMixin:
 		# This is deliberately NOT a doc_events handler: doc_events run with
 		# transaction control disabled, and the guard needs commit-and-chain.
 		super().before_submit()
-		enforce_stock_before_submit(self)
+		enforce_stock_before_submit(self, in_submit=True)
 
 
 def stock_needed(row):
@@ -87,7 +92,13 @@ def stock_needed(row):
 	return flt(stock_qty)
 
 
-def enforce_stock_before_submit(doc):
+def enforce_stock_before_submit(doc, in_submit=False):
+	"""Lock and re-check stock for `doc`.
+
+	`in_submit` marks a call from inside `Document.save` (the mixin), where
+	`_doc_before_save` is the row check_if_latest just loaded; only then is it a
+	valid baseline for re-verifying the invoice row.
+	"""
 	if not can_consume_stock(doc):
 		return
 
@@ -128,15 +139,33 @@ def enforce_stock_before_submit(doc):
 		return
 
 	# Everything the request did before submit is committed and the transaction
-	# restarted (`COMMIT AND CHAIN`). This matters for freshness: the submit
-	# transaction's snapshot was taken at the request's first query, and under
-	# REPEATABLE READ it would never show a sibling reservation committed since —
-	# exactly the race this guard closes. Nothing was written to the database
-	# between validation and this point; the submit's own writes (docstatus, GL,
-	# ledger) all happen after, so they roll back as one on failure as usual.
+	# restarted (`COMMIT AND CHAIN`), through frappe so its before/after-commit
+	# callbacks fire for the work they belong to. Nothing was written to the
+	# database by this submit yet; its own writes (docstatus, ledger) all happen
+	# after, so they roll back as one on failure as usual. The read-view reset
+	# that freshness actually depends on happens inside the window below.
 	frappe.db.commit(chain=True)
 
-	with _bin_lock_wait_window(item_codes):
+	stock_item_codes = sorted({item_code for item_code, _warehouse in required})
+	with _bin_lock_wait_window(stock_item_codes):
+		# Fresh read view. The availability read below is a plain (consistent) read,
+		# and under REPEATABLE READ InnoDB pins the transaction's snapshot at its first
+		# consistent read. frappe.db.commit() runs after-commit callbacks once the
+		# new transaction has begun, and any of them reading a table would pin the
+		# snapshot *before* the bin lock — a submit that then waits out a sibling
+		# would never see that sibling's reservation, the very oversell this guard
+		# prevents. A raw COMMIT AND CHAIN here (no callbacks; only session-variable
+		# statements follow before the locking read) starts a transaction with no
+		# snapshot yet, so the first consistent read happens after the lock.
+		_restart_transaction()
+		_register_series_revert(doc)
+
+		# The early commit released the invoice-row lock frappe took in
+		# check_if_latest, so a duplicate submit of this same invoice could have
+		# slipped past that check. Re-take the row lock and re-verify.
+		if in_submit:
+			_recheck_invoice_row(doc)
+
 		# lock the bins for the whole submit; ordered so concurrent invoices always
 		# acquire them in the same sequence and cannot deadlock on each other — and
 		# so that no competitor can commit its reservation between our lock and our
@@ -219,7 +248,9 @@ def _bin_lock_wait_window(item_codes):
 		# keep the underlying 1205 in the error log: the friendly throw the user
 		# sees does not carry the database error, and recurring contention is
 		# diagnosed from this trail
-		frappe.log_error(title="POS stock guard lock wait timed out", message=repr(err))
+		# deferred: the throw below rolls the request back, and a log inserted in
+		# this transaction would be rolled back with it
+		frappe.log_error(title="POS stock guard lock wait timed out", message=repr(err), defer_insert=True)
 		frappe.throw(
 			_("Items {0} are being sold at another till right now; please retry in a few seconds.").format(
 				frappe.bold(", ".join(sorted(item_codes)))
@@ -238,6 +269,107 @@ def _bin_lock_wait_window(item_codes):
 			frappe.logger("stock_guard").exception(
 				"could not restore innodb_lock_wait_timeout after the stock guard"
 			)
+
+
+def _transaction_control_enabled():
+	# inside doc_events handlers frappe disables transaction control and its
+	# commit() is a no-op; the guard must not commit around it either
+	return not getattr(frappe.db, "_disable_transaction_control", 0)
+
+
+def _restart_transaction():
+	"""COMMIT AND CHAIN without frappe's commit callbacks (see the call site)."""
+	if not _transaction_control_enabled():
+		return
+	frappe.db.sql("commit and chain")
+	frappe.db.value_cache.clear()
+
+
+def _register_series_revert(doc):
+	"""Give the naming-series number back if this submit ends up rolled back.
+
+	When an invoice is inserted and submitted in one request (API, import — the POS
+	screen always saves a draft first), its name was drawn from the naming series
+	before this guard ran, and the guard's early commit made that bump permanent.
+	A failed submit (e.g. the retry message below) would otherwise leave a hole in
+	the invoice numbering. `revert_series_if_last` only steps the series back when
+	this invoice still holds its last number, so a sibling that drew the next one
+	in the meantime is never disturbed. frappe.db.commit() clears after-rollback
+	callbacks, so this is registered after the guard's own commits and is dropped
+	by the request's final commit on success.
+	"""
+	if not doc.flags.in_insert or not doc.get("naming_series") or not doc.get("name"):
+		return
+	if not _transaction_control_enabled():
+		return
+
+	naming_series, name = doc.naming_series, doc.name
+
+	def revert():
+		from frappe.model.naming import revert_series_if_last
+
+		try:
+			revert_series_if_last(naming_series, name, doc)
+			# the request's rollback already ran; this runs in its fresh chained
+			# transaction, which nothing else will commit
+			frappe.db.sql("commit and chain")
+		except Exception:
+			frappe.logger("stock_guard").exception(
+				"could not revert naming series %s after rolled-back submit of %s", naming_series, name
+			)
+
+	frappe.db.after_rollback.add(revert)
+
+
+def _recheck_invoice_row(doc):
+	"""Re-lock the invoice row and verify it is still the draft this submit loaded.
+
+	frappe's check_if_latest locks the row FOR UPDATE and checks docstatus/modified,
+	which makes a concurrent duplicate submit of the same invoice wait and then fail.
+	The guard's early commit releases that lock, so a duplicate (a network or proxy
+	retry, a second tab) could pass check_if_latest while this submit is in flight
+	and then run on_submit a second time — doubling livestock allocations, loyalty
+	points, coupon use and vouchers. The row is locked again here, before the bins,
+	so every submit of one invoice takes its locks in the same order.
+	"""
+	previous = getattr(doc, "_doc_before_save", None)
+	if doc.flags.in_insert or not previous:
+		# insert-and-submit: the row does not exist yet, and a duplicate insert
+		# fails on the primary key
+		return
+
+	try:
+		invoice = frappe.qb.DocType(doc.doctype)
+		rows = (
+			frappe.qb.from_(invoice)
+			.select(invoice.docstatus, invoice.modified)
+			.where(invoice.name == doc.name)
+			.for_update()
+		).run(as_dict=True)
+	except QueryTimeoutError as err:
+		frappe.log_error(
+			title="POS stock guard invoice lock wait timed out", message=repr(err), defer_insert=True
+		)
+		frappe.throw(
+			_("{0} {1} is already being submitted by another request. Wait a moment, then refresh.").format(
+				_(doc.doctype), frappe.bold(doc.name)
+			),
+			title=_("Please Retry"),
+		)
+
+	current = rows[0] if rows else None
+	if (
+		not current
+		or cint(current.docstatus) != cint(previous.docstatus)
+		or get_datetime(current.modified) != get_datetime(previous.modified)
+	):
+		frappe.throw(
+			_(
+				"{0} {1} was changed or submitted by another request while this one was in progress. Please refresh."
+			).format(_(doc.doctype), frappe.bold(doc.name)),
+			exc=frappe.TimestampMismatchError,
+			title=_("Invoice Changed"),
+		)
 
 
 def can_consume_stock(doc):
