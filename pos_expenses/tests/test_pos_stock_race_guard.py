@@ -647,3 +647,51 @@ class TestPOSRaceGuardLockWait(POSRaceGuardTestBase):
 		again = self.create_pi(qty=1)
 		frappe.db.commit()
 		self.assertEqual(again.name, burned)
+
+	def test_whole_submit_lock_wait_is_bounded(self):
+		"""A duplicate in-flight submit holds the invoice row: the re-click gives up fast.
+
+		frappe's check_if_latest locks the invoice row before the guard runs, so
+		without a submit-wide bound a re-clicked checkout waits the server default
+		(50 s) holding its connection — the queue behind the 1040 outage.
+		"""
+		import time
+		from unittest import mock
+
+		from pos_expenses import stock_guard
+
+		self.open_pos()
+		frappe.db.commit()
+		self.stock_in(2)
+		frappe.db.commit()
+		pi = self.create_pi(qty=1)
+		frappe.db.commit()
+		previous_wait = cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0])
+
+		with self.secondary_connection():
+			frappe.db.sql("SELECT name FROM `tabPOS Invoice` WHERE name = %s FOR UPDATE", pi.name)
+		frappe.local.db = self._primary_connection
+
+		try:
+			started = time.monotonic()
+			with (
+				mock.patch.object(stock_guard, "LOCK_WAIT_SECONDS", 1),
+				mock.patch.object(stock_guard.frappe, "log_error") as log_error,
+			):
+				with self.assertRaises(frappe.ValidationError) as caught:
+					frappe.get_doc("POS Invoice", pi.name).submit()
+			elapsed = time.monotonic() - started
+
+			self.assertIn("please retry", str(caught.exception).lower())
+			self.assertLess(elapsed, 10, "the submit must not wait the server default")
+			self.assertTrue(log_error.call_args.kwargs.get("defer_insert"))
+			self.assertEqual(
+				cint(frappe.db.sql("SELECT @@session.innodb_lock_wait_timeout")[0][0]), previous_wait
+			)
+		finally:
+			self._rollback_connections()
+
+		# lock gone: the same submit goes through
+		frappe.db.commit()
+		frappe.get_doc("POS Invoice", pi.name).submit()
+		self.assertEqual(frappe.db.get_value("POS Invoice", pi.name, "docstatus"), 1)
